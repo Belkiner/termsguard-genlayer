@@ -1,0 +1,16 @@
+{
+  "name": "termsguard-genlayer",
+  "private": true,
+  "version": "0.2.0",
+  "scripts": {
+    "test:direct": "pytest tests/direct -v",
+    "test:integration": "gltest tests/integration -v -s",
+    "lint:contract": "genvm-lint check contracts/terms_guard.py",
+    "deploy": "genlayer deploy --contract contracts/terms_guard.py",
+    "frontend:dev": "npm --prefix frontend run dev",
+    "frontend:build": "npm --prefix frontend run build"
+  },
+  "devDependencies": {
+    "genlayer": "latest"
+  }
+}

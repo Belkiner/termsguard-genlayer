@@ -208,4 +208,3 @@ The application needs to decide whether two pieces of public language are materi
 ## License
 
 MIT
-

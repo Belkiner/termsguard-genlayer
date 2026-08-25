@@ -1,0 +1,5 @@
+networks:
+  studionet:
+    rpc_url: https://studio.genlayer.com/api
+  testnet_bradbury:
+    rpc_url: https://testnet-bradbury.genlayer.com/api
