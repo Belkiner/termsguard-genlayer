@@ -1,7 +1,18 @@
+import type { CalldataEncodable, Network } from "genlayer-js/types";
+
 let sdkPromise: Promise<typeof import("genlayer-js")> | undefined;
 
 const CONTRACT_ADDRESS = process.env.NEXT_PUBLIC_CONTRACT_ADDRESS ?? "";
-const NETWORK = process.env.NEXT_PUBLIC_NETWORK ?? "studionet";
+const configuredNetwork = process.env.NEXT_PUBLIC_NETWORK;
+const NETWORK: Network =
+  configuredNetwork === "localnet" ||
+  configuredNetwork === "testnetAsimov" ||
+  configuredNetwork === "testnetBradbury" ||
+  configuredNetwork === "studionet"
+    ? configuredNetwork
+    : "studionet";
+
+type ContractAddress = `0x${string}`;
 
 async function sdk() {
   sdkPromise ??= import("genlayer-js");
@@ -10,33 +21,49 @@ async function sdk() {
 
 async function getChain() {
   const chains = await import("genlayer-js/chains");
-  const map: Record<string, unknown> = {
+  const map = {
     studionet: chains.studionet,
     testnetBradbury: chains.testnetBradbury,
     testnetAsimov: chains.testnetAsimov,
     localnet: chains.localnet,
-  };
-  return map[NETWORK] ?? chains.studionet;
+  } as const;
+
+  return NETWORK in map
+    ? map[NETWORK as keyof typeof map]
+    : chains.studionet;
 }
 
 export function isLive() {
   return Boolean(CONTRACT_ADDRESS);
 }
 
-export async function readContract(functionName: string, args: unknown[] = []) {
+function getContractAddress(): ContractAddress {
+  if (!/^0x[0-9a-fA-F]{40}$/.test(CONTRACT_ADDRESS)) {
+    throw new Error("NEXT_PUBLIC_CONTRACT_ADDRESS must be a valid 0x contract address.");
+  }
+
+  return CONTRACT_ADDRESS as ContractAddress;
+}
+
+export async function readContract(
+  functionName: string,
+  args: CalldataEncodable[] = [],
+) {
   if (!isLive()) throw new Error("TermsGuard is running in Demo Mode.");
   const { createClient } = await sdk();
   const chain = await getChain();
   const client = createClient({ chain });
   return client.readContract({
-    address: CONTRACT_ADDRESS,
+    address: getContractAddress(),
     functionName,
     args,
-    stateStatus: "accepted",
   });
 }
 
-export async function writeContract(functionName: string, args: unknown[] = []) {
+export async function writeContract(
+  functionName: string,
+  args: CalldataEncodable[] = [],
+) {
   if (!isLive()) throw new Error("Deploy the contract and set NEXT_PUBLIC_CONTRACT_ADDRESS first.");
   if (typeof window === "undefined" || !window.ethereum) {
     throw new Error("No browser wallet provider detected.");
@@ -56,7 +83,7 @@ export async function writeContract(functionName: string, args: unknown[] = []) 
 
   await client.connect(NETWORK);
   const hash = await client.writeContract({
-    address: CONTRACT_ADDRESS,
+    address: getContractAddress(),
     functionName,
     args,
     value: BigInt(0),
@@ -66,7 +93,7 @@ export async function writeContract(functionName: string, args: unknown[] = []) 
 }
 
 export async function waitFinalized(client: any, hash: string) {
-  const { TransactionStatus } = await sdk();
+  const { TransactionStatus } = await import("genlayer-js/types");
   return client.waitForTransactionReceipt({
     hash,
     status: TransactionStatus.FINALIZED,
