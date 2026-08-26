@@ -1,10 +1,3 @@
-import { createClient } from "genlayer-js";
-import {
-  localnet,
-  studionet,
-  testnetAsimov,
-  testnetBradbury,
-} from "genlayer-js/chains";
 import type { CalldataEncodable, Network } from "genlayer-js/types";
 
 const CONTRACT_ADDRESS = process.env.NEXT_PUBLIC_CONTRACT_ADDRESS ?? "";
@@ -21,27 +14,6 @@ const NETWORK: Network =
 
 type ContractAddress = `0x${string}`;
 
-function getChain() {
-  switch (NETWORK) {
-    case "localnet":
-      return localnet;
-
-    case "testnetAsimov":
-      return testnetAsimov;
-
-    case "testnetBradbury":
-      return testnetBradbury;
-
-    case "studionet":
-    default:
-      return studionet;
-  }
-}
-
-export function isLive() {
-  return Boolean(CONTRACT_ADDRESS);
-}
-
 function getContractAddress(): ContractAddress {
   if (!/^0x[0-9a-fA-F]{40}$/.test(CONTRACT_ADDRESS)) {
     throw new Error(
@@ -52,6 +24,33 @@ function getContractAddress(): ContractAddress {
   return CONTRACT_ADDRESS as ContractAddress;
 }
 
+async function getSDK() {
+  return import("genlayer-js");
+}
+
+async function getChain() {
+  const chains = await import("genlayer-js/chains");
+
+  switch (NETWORK) {
+    case "localnet":
+      return chains.localnet;
+
+    case "testnetAsimov":
+      return chains.testnetAsimov;
+
+    case "testnetBradbury":
+      return chains.testnetBradbury;
+
+    case "studionet":
+    default:
+      return chains.studionet;
+  }
+}
+
+export function isLive() {
+  return Boolean(CONTRACT_ADDRESS);
+}
+
 export async function readContract(
   functionName: string,
   args: CalldataEncodable[] = [],
@@ -60,10 +59,11 @@ export async function readContract(
     throw new Error("TermsGuard is running in Demo Mode.");
   }
 
-  const chain = getChain();
+  const { createClient } = await getSDK();
+  const chain = await getChain();
 
   const client = createClient({
-    chain,
+    chain: chain as any,
   });
 
   return client.readContract({
@@ -97,12 +97,13 @@ export async function writeContract(
     throw new Error("Wallet connection was cancelled.");
   }
 
-  const chain = getChain();
+  const { createClient } = await getSDK();
+  const chain = await getChain();
 
   const client = createClient({
-    chain,
+    chain: chain as any,
     account: account as `0x${string}`,
-    provider: window.ethereum,
+    provider: window.ethereum as any,
   });
 
   await client.connect(NETWORK);
@@ -114,10 +115,16 @@ export async function writeContract(
     value: BigInt(0),
   });
 
-  return { hash, client };
+  return {
+    hash,
+    client,
+  };
 }
 
-export async function waitFinalized(client: any, hash: string) {
+export async function waitFinalized(
+  client: any,
+  hash: string,
+) {
   const { TransactionStatus } = await import("genlayer-js/types");
 
   return client.waitForTransactionReceipt({
