@@ -1,9 +1,16 @@
+import { createClient } from "genlayer-js";
+import {
+  localnet,
+  studionet,
+  testnetAsimov,
+  testnetBradbury,
+} from "genlayer-js/chains";
 import type { CalldataEncodable, Network } from "genlayer-js/types";
 
-let sdkPromise: Promise<typeof import("genlayer-js")> | undefined;
-
 const CONTRACT_ADDRESS = process.env.NEXT_PUBLIC_CONTRACT_ADDRESS ?? "";
+
 const configuredNetwork = process.env.NEXT_PUBLIC_NETWORK;
+
 const NETWORK: Network =
   configuredNetwork === "localnet" ||
   configuredNetwork === "testnetAsimov" ||
@@ -14,23 +21,21 @@ const NETWORK: Network =
 
 type ContractAddress = `0x${string}`;
 
-async function sdk() {
-  sdkPromise ??= import("genlayer-js");
-  return sdkPromise;
-}
+function getChain() {
+  switch (NETWORK) {
+    case "localnet":
+      return localnet;
 
-async function getChain() {
-  const chains = await import("genlayer-js/chains");
-  const map = {
-    studionet: chains.studionet,
-    testnetBradbury: chains.testnetBradbury,
-    testnetAsimov: chains.testnetAsimov,
-    localnet: chains.localnet,
-  } as const;
+    case "testnetAsimov":
+      return testnetAsimov;
 
-  return NETWORK in map
-    ? map[NETWORK as keyof typeof map]
-    : chains.studionet;
+    case "testnetBradbury":
+      return testnetBradbury;
+
+    case "studionet":
+    default:
+      return studionet;
+  }
 }
 
 export function isLive() {
@@ -39,7 +44,9 @@ export function isLive() {
 
 function getContractAddress(): ContractAddress {
   if (!/^0x[0-9a-fA-F]{40}$/.test(CONTRACT_ADDRESS)) {
-    throw new Error("NEXT_PUBLIC_CONTRACT_ADDRESS must be a valid 0x contract address.");
+    throw new Error(
+      "NEXT_PUBLIC_CONTRACT_ADDRESS must be a valid 0x contract address.",
+    );
   }
 
   return CONTRACT_ADDRESS as ContractAddress;
@@ -49,10 +56,16 @@ export async function readContract(
   functionName: string,
   args: CalldataEncodable[] = [],
 ) {
-  if (!isLive()) throw new Error("TermsGuard is running in Demo Mode.");
-  const { createClient } = await sdk();
-  const chain = await getChain();
-  const client = createClient({ chain });
+  if (!isLive()) {
+    throw new Error("TermsGuard is running in Demo Mode.");
+  }
+
+  const chain = getChain();
+
+  const client = createClient({
+    chain,
+  });
+
   return client.readContract({
     address: getContractAddress(),
     functionName,
@@ -64,24 +77,36 @@ export async function writeContract(
   functionName: string,
   args: CalldataEncodable[] = [],
 ) {
-  if (!isLive()) throw new Error("Deploy the contract and set NEXT_PUBLIC_CONTRACT_ADDRESS first.");
+  if (!isLive()) {
+    throw new Error(
+      "Deploy the contract and set NEXT_PUBLIC_CONTRACT_ADDRESS first.",
+    );
+  }
+
   if (typeof window === "undefined" || !window.ethereum) {
     throw new Error("No browser wallet provider detected.");
   }
 
-  const { createClient } = await sdk();
-  const chain = await getChain();
-  const accounts = await window.ethereum.request({ method: "eth_requestAccounts" });
+  const accounts = await window.ethereum.request({
+    method: "eth_requestAccounts",
+  });
+
   const account = accounts?.[0];
-  if (!account) throw new Error("Wallet connection was cancelled.");
+
+  if (!account) {
+    throw new Error("Wallet connection was cancelled.");
+  }
+
+  const chain = getChain();
 
   const client = createClient({
     chain,
-    account,
+    account: account as `0x${string}`,
     provider: window.ethereum,
   });
 
   await client.connect(NETWORK);
+
   const hash = await client.writeContract({
     address: getContractAddress(),
     functionName,
@@ -94,6 +119,7 @@ export async function writeContract(
 
 export async function waitFinalized(client: any, hash: string) {
   const { TransactionStatus } = await import("genlayer-js/types");
+
   return client.waitForTransactionReceipt({
     hash,
     status: TransactionStatus.FINALIZED,
@@ -111,7 +137,10 @@ export function networkName() {
 declare global {
   interface Window {
     ethereum?: {
-      request: (args: { method: string; params?: unknown[] }) => Promise<any>;
+      request: (args: {
+        method: string;
+        params?: unknown[];
+      }) => Promise<any>;
     };
   }
 }
