@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 import StatusBadge from "../components/StatusBadge";
 import StatCard from "../components/StatCard";
 import { demoCommitments, demoHistory, demoProjects } from "../lib/demo";
-import { isLive, readContract, waitFinalized, writeContract } from "../lib/genlayer";
+import { isLive, readContract, waitFinalized, writeContract, type TransactionProgress } from "../lib/genlayer";
 import type { Commitment, Project, Verification } from "../lib/types";
 
 function projectFromRaw(raw: any, id: number): Project {
@@ -62,6 +62,7 @@ export default function Home() {
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const [wallet, setWallet] = useState("");
+  const [txProgress, setTxProgress] = useState<TransactionProgress | null>(null);
 
   const selected = projects.find((p) => p.id === selectedId) ?? projects[0];
   const live = isLive();
@@ -110,6 +111,7 @@ export default function Home() {
       setNotice(error instanceof Error ? error.message : "Could not sync contract.");
     } finally {
       setBusy(false);
+      setTxProgress(null);
     }
   }
 
@@ -126,13 +128,13 @@ export default function Home() {
     setBusy(true);
     try {
       const { hash, client } = await writeContract("create_project", [name, url, category]);
-      await waitFinalized(client, hash);
+      await waitFinalized(client, hash, setTxProgress);
       setName(""); setUrl("");
       setNotice("Project registered on GenLayer.");
       await refresh();
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Project creation failed.");
-    } finally { setBusy(false); }
+    } finally { setBusy(false); setTxProgress(null); }
   }
 
   async function captureBaseline() {
@@ -141,11 +143,11 @@ export default function Home() {
     setBusy(true);
     try {
       const { hash, client } = await writeContract("capture_baseline", [selected.id]);
-      await waitFinalized(client, hash);
+      await waitFinalized(client, hash, setTxProgress);
       setNotice("Baseline captured with GenLayer consensus.");
       await refresh();
     } catch (error) { setNotice(error instanceof Error ? error.message : "Baseline capture failed."); }
-    finally { setBusy(false); }
+    finally { setBusy(false); setTxProgress(null); }
   }
 
   async function verifyProject() {
@@ -159,11 +161,11 @@ export default function Home() {
     setBusy(true);
     try {
       const { hash, client } = await writeContract("verify_project", [selected.id]);
-      await waitFinalized(client, hash);
+      await waitFinalized(client, hash, setTxProgress);
       setNotice("Policy verification finalized.");
       await refresh();
     } catch (error) { setNotice(error instanceof Error ? error.message : "Verification failed."); }
-    finally { setBusy(false); }
+    finally { setBusy(false); setTxProgress(null); }
   }
 
   async function addCommitment(event: React.FormEvent) {
@@ -177,12 +179,12 @@ export default function Home() {
     setBusy(true);
     try {
       const { hash, client } = await writeContract("add_commitment", [selected.id, statement, deadline]);
-      await waitFinalized(client, hash);
+      await waitFinalized(client, hash, setTxProgress);
       setStatement(""); setDeadline("");
       setNotice("Commitment anchored on GenLayer.");
       await refresh();
     } catch (error) { setNotice(error instanceof Error ? error.message : "Commitment creation failed."); }
-    finally { setBusy(false); }
+    finally { setBusy(false); setTxProgress(null); }
   }
 
   async function verifyCommitment(id: number) {
@@ -193,15 +195,54 @@ export default function Home() {
     setBusy(true);
     try {
       const { hash, client } = await writeContract("verify_commitment", [id]);
-      await waitFinalized(client, hash);
+      await waitFinalized(client, hash, setTxProgress);
       setNotice("Commitment verification finalized.");
       await refresh();
     } catch (error) { setNotice(error instanceof Error ? error.message : "Commitment verification failed."); }
-    finally { setBusy(false); }
+    finally { setBusy(false); setTxProgress(null); }
   }
+
+  const txLabel: Record<string, string> = {
+    PENDING: "Transaction queued",
+    PROPOSING: "GenLayer validators are proposing",
+    COMMITTING: "Validators are committing votes",
+    REVEALING: "Validators are revealing votes",
+    ACCEPTED: "Consensus accepted",
+    READY_TO_FINALIZE: "Ready to finalize",
+    FINALIZED: "Verification finalized",
+    CANCELED: "Transaction canceled",
+    UNDETERMINED: "Consensus is undetermined",
+    VALIDATORS_TIMEOUT: "Validators timed out",
+    LEADER_TIMEOUT: "Leader timed out",
+    UNKNOWN: "Checking transaction status",
+  };
+
+  const txSteps = ["PENDING", "PROPOSING", "COMMITTING", "REVEALING", "ACCEPTED", "FINALIZED"];
+  const txIndex = txProgress ? txSteps.indexOf(txProgress.status) : -1;
 
   return (
     <main>
+      {txProgress && (
+        <div className="tx-overlay" role="status" aria-live="polite">
+          <div className="tx-modal">
+            <div className="tx-orbit"><div className="tx-core">T</div></div>
+            <span className="section-label">TERMSGUARD · CONSENSUS</span>
+            <h2>{txProgress.status === "FINALIZED" ? "Verification complete" : "Verification in progress"}</h2>
+            <p className="tx-stage">{txLabel[txProgress.status] ?? "Processing transaction"}</p>
+            <div className="tx-steps">
+              {txSteps.map((step, index) => (
+                <div className={`tx-step ${index < txIndex ? "done" : ""} ${step === txProgress.status ? "current" : ""}`} key={step}>
+                  <span>{index < txIndex ? "✓" : index + 1}</span>
+                  <small>{step}</small>
+                </div>
+              ))}
+            </div>
+            <div className="tx-hash"><span>TRANSACTION</span><code>{txProgress.hash.slice(0, 10)}…{txProgress.hash.slice(-8)}</code></div>
+            {txProgress.status === "UNKNOWN" && <small className="tx-note">Still checking the network. Do not submit the same action again.</small>}
+            {txProgress.status === "FINALIZED" && <small className="tx-note success">Finalized on GenLayer.</small>}
+          </div>
+        </div>
+      )}
       <header className="nav shell">
         <div className="brand"><div className="brand-mark">T</div><div><strong>TermsGuard</strong><small>semantic verification layer</small></div></div>
         <div className="nav-right"><span className={live ? "network live" : "network"}>{live ? "GENLAYER LIVE" : "DEMO MODE"}</span><button className="button ghost" onClick={connectWallet}>{wallet ? `${wallet.slice(0, 6)}…${wallet.slice(-4)}` : "Connect wallet"}</button></div>
