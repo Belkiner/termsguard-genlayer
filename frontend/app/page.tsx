@@ -1,50 +1,62 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import StatusBadge from "../components/StatusBadge";
 import StatCard from "../components/StatCard";
 import { demoCommitments, demoHistory, demoProjects } from "../lib/demo";
-import { isLive, readContract, waitFinalized, writeContract, type TransactionProgress } from "../lib/genlayer";
+import { isLive, readContract, waitForAccepted, writeContract, type TransactionProgress } from "../lib/genlayer";
 import type { Commitment, Project, Verification } from "../lib/types";
 
+function field(raw: any, index: number, key: string, fallback: any = "") {
+  if (Array.isArray(raw)) return raw[index] ?? fallback;
+  if (raw && typeof raw === "object") {
+    if (raw[key] !== undefined) return raw[key];
+    // Some RPC wrappers put the decoded value under data/result/value.
+    for (const container of [raw.data, raw.result, raw.value]) {
+      if (container && typeof container === "object") {
+        if (Array.isArray(container)) return container[index] ?? fallback;
+        if (container[key] !== undefined) return container[key];
+      }
+    }
+  }
+  return fallback;
+}
+
 function projectFromRaw(raw: any, id: number): Project {
-  const a = Array.isArray(raw) ? raw : [];
   return {
     id,
-    name: a[0] ?? `Project ${id}`,
-    url: a[1] ?? "",
-    category: a[2] ?? "Other",
-    baseline: a[3] ?? "",
-    status: a[4] ?? "UNKNOWN",
-    score: Number(a[5] ?? 0),
-    summary: a[6] ?? "No summary available.",
+    name: String(field(raw, 0, "name", `Project ${id}`)),
+    url: String(field(raw, 1, "url", "")),
+    category: String(field(raw, 2, "category", "Other")),
+    baseline: String(field(raw, 3, "baseline", "")),
+    status: String(field(raw, 4, "status", "UNKNOWN")),
+    score: Number(field(raw, 5, "score", 0)),
+    summary: String(field(raw, 6, "summary", "No summary available.")),
   };
 }
 
 function commitmentFromRaw(raw: any, id: number): Commitment {
-  const a = Array.isArray(raw) ? raw : [];
   return {
     id,
-    projectId: Number(a[0] ?? 0),
-    statement: a[1] ?? "",
-    deadline: a[2] ?? "",
-    status: a[3] ?? "UNKNOWN",
-    score: Number(a[4] ?? 0),
-    evidence: a[5] ?? "",
+    projectId: Number(field(raw, 0, "project_id", field(raw, 0, "projectId", 0))),
+    statement: String(field(raw, 1, "statement", "")),
+    deadline: String(field(raw, 2, "deadline", "")),
+    status: String(field(raw, 3, "status", "UNKNOWN")),
+    score: Number(field(raw, 4, "score", 0)),
+    evidence: String(field(raw, 5, "evidence", "")),
   };
 }
 
 function verificationFromRaw(raw: any, id: number): Verification {
-  const a = Array.isArray(raw) ? raw : [];
   return {
     id,
-    projectId: Number(a[0] ?? 0),
-    kind: a[1] ?? "",
-    itemId: Number(a[2] ?? 0),
-    status: a[3] ?? "UNKNOWN",
-    score: Number(a[4] ?? 0),
-    summary: a[5] ?? "",
-    evidence: a[6] ?? "",
+    projectId: Number(field(raw, 0, "project_id", field(raw, 0, "projectId", 0))),
+    kind: String(field(raw, 1, "kind", "")),
+    itemId: Number(field(raw, 2, "item_id", field(raw, 2, "itemId", 0))),
+    status: String(field(raw, 3, "status", "UNKNOWN")),
+    score: Number(field(raw, 4, "score", 0)),
+    summary: String(field(raw, 5, "summary", "")),
+    evidence: String(field(raw, 6, "evidence", "")),
   };
 }
 
@@ -66,6 +78,12 @@ export default function Home() {
 
   const selected = projects.find((p) => p.id === selectedId) ?? projects[0];
   const live = isLive();
+
+  useEffect(() => {
+    if (!live) return;
+    void refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [live]);
 
   const stats = useMemo(() => ({
     monitored: projects.length,
@@ -105,13 +123,12 @@ export default function Home() {
       setProjects(nextProjects);
       setCommitments(nextCommitments);
       setHistory(nextHistory.reverse());
-      if (nextProjects[0]) setSelectedId(nextProjects[0].id);
+      if (!nextProjects.some((p) => p.id === selectedId) && nextProjects[0]) setSelectedId(nextProjects[0].id);
       setNotice("Synced with GenLayer.");
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Could not sync contract.");
     } finally {
       setBusy(false);
-      setTxProgress(null);
     }
   }
 
@@ -128,13 +145,14 @@ export default function Home() {
     setBusy(true);
     try {
       const { hash, client } = await writeContract("create_project", [name, url, category]);
-      await waitFinalized(client, hash, setTxProgress);
+      await waitForAccepted(client, hash, setTxProgress);
       setName(""); setUrl("");
       setNotice("Project registered on GenLayer.");
       await refresh();
+      setTxProgress(null);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Project creation failed.");
-    } finally { setBusy(false); setTxProgress(null); }
+    } finally { setBusy(false); }
   }
 
   async function captureBaseline() {
@@ -143,11 +161,12 @@ export default function Home() {
     setBusy(true);
     try {
       const { hash, client } = await writeContract("capture_baseline", [selected.id]);
-      await waitFinalized(client, hash, setTxProgress);
+      await waitForAccepted(client, hash, setTxProgress);
       setNotice("Baseline captured with GenLayer consensus.");
       await refresh();
+      setTxProgress(null);
     } catch (error) { setNotice(error instanceof Error ? error.message : "Baseline capture failed."); }
-    finally { setBusy(false); setTxProgress(null); }
+    finally { setBusy(false); }
   }
 
   async function verifyProject() {
@@ -161,11 +180,12 @@ export default function Home() {
     setBusy(true);
     try {
       const { hash, client } = await writeContract("verify_project", [selected.id]);
-      await waitFinalized(client, hash, setTxProgress);
-      setNotice("Policy verification finalized.");
+      await waitForAccepted(client, hash, setTxProgress);
+      setNotice("Policy verification accepted by consensus.");
       await refresh();
+      setTxProgress(null);
     } catch (error) { setNotice(error instanceof Error ? error.message : "Verification failed."); }
-    finally { setBusy(false); setTxProgress(null); }
+    finally { setBusy(false); }
   }
 
   async function addCommitment(event: React.FormEvent) {
@@ -179,12 +199,13 @@ export default function Home() {
     setBusy(true);
     try {
       const { hash, client } = await writeContract("add_commitment", [selected.id, statement, deadline]);
-      await waitFinalized(client, hash, setTxProgress);
+      await waitForAccepted(client, hash, setTxProgress);
       setStatement(""); setDeadline("");
       setNotice("Commitment anchored on GenLayer.");
       await refresh();
+      setTxProgress(null);
     } catch (error) { setNotice(error instanceof Error ? error.message : "Commitment creation failed."); }
-    finally { setBusy(false); setTxProgress(null); }
+    finally { setBusy(false); }
   }
 
   async function verifyCommitment(id: number) {
@@ -195,11 +216,12 @@ export default function Home() {
     setBusy(true);
     try {
       const { hash, client } = await writeContract("verify_commitment", [id]);
-      await waitFinalized(client, hash, setTxProgress);
-      setNotice("Commitment verification finalized.");
+      await waitForAccepted(client, hash, setTxProgress);
+      setNotice("Commitment verification accepted by consensus.");
       await refresh();
+      setTxProgress(null);
     } catch (error) { setNotice(error instanceof Error ? error.message : "Commitment verification failed."); }
-    finally { setBusy(false); setTxProgress(null); }
+    finally { setBusy(false); }
   }
 
   const txLabel: Record<string, string> = {
@@ -227,7 +249,7 @@ export default function Home() {
           <div className="tx-modal">
             <div className="tx-orbit"><div className="tx-core">T</div></div>
             <span className="section-label">TERMSGUARD · CONSENSUS</span>
-            <h2>{txProgress.status === "FINALIZED" ? "Verification complete" : "Verification in progress"}</h2>
+            <h2>{txProgress.status === "ACCEPTED" || txProgress.status === "FINALIZED" ? "Consensus accepted" : "Verification in progress"}</h2>
             <p className="tx-stage">{txLabel[txProgress.status] ?? "Processing transaction"}</p>
             <div className="tx-steps">
               {txSteps.map((step, index) => (
@@ -239,6 +261,7 @@ export default function Home() {
             </div>
             <div className="tx-hash"><span>TRANSACTION</span><code>{txProgress.hash.slice(0, 10)}…{txProgress.hash.slice(-8)}</code></div>
             {txProgress.status === "UNKNOWN" && <small className="tx-note">Still checking the network. Do not submit the same action again.</small>}
+            {txProgress.status === "ACCEPTED" && <small className="tx-note success">Consensus accepted. Reading the latest contract state…</small>}
             {txProgress.status === "FINALIZED" && <small className="tx-note success">Finalized on GenLayer.</small>}
           </div>
         </div>
