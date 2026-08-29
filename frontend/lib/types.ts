@@ -1,3 +1,5 @@
+export type Mode = "simple" | "advanced" | "audit";
+
 export type Project = {
   id: number;
   name: string;
@@ -28,4 +30,21 @@ export type Verification = {
   score: number;
   summary: string;
   evidence: string;
+};
+
+export type TxStage =
+  | "PENDING"
+  | "PROPOSING"
+  | "COMMITTING"
+  | "REVEALING"
+  | "ACCEPTED"
+  | "FINALIZED"
+  | "CANCELED"
+  | "UNDETERMINED"
+  | "UNKNOWN";
+
+export type TxProgress = {
+  hash: string;
+  status: TxStage;
+  execution?: string;
 };
