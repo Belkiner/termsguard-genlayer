@@ -1,7 +1,5 @@
 import type { CalldataEncodable, Network } from "genlayer-js/types";
 
-// Public deployed TermsGuard contract. Vercel can override this with
-// NEXT_PUBLIC_CONTRACT_ADDRESS when a newer deployment is used.
 const DEFAULT_CONTRACT_ADDRESS = "0x276f491953DE761d643949F6C154BCB8e9Bad161";
 const CONTRACT_ADDRESS =
   process.env.NEXT_PUBLIC_CONTRACT_ADDRESS?.trim() || DEFAULT_CONTRACT_ADDRESS;
@@ -31,11 +29,15 @@ async function getSDK() {
 async function getChain() {
   const chains = await import("genlayer-js/chains");
   switch (NETWORK) {
-    case "localnet": return chains.localnet;
-    case "testnetAsimov": return chains.testnetAsimov;
-    case "testnetBradbury": return chains.testnetBradbury;
+    case "localnet":
+      return chains.localnet;
+    case "testnetAsimov":
+      return chains.testnetAsimov;
+    case "testnetBradbury":
+      return chains.testnetBradbury;
     case "studionet":
-    default: return chains.studionet;
+    default:
+      return chains.studionet;
   }
 }
 
@@ -43,7 +45,10 @@ export function isLive() {
   return /^0x[0-9a-fA-F]{40}$/.test(CONTRACT_ADDRESS);
 }
 
-export async function readContract(functionName: string, args: CalldataEncodable[] = []) {
+export async function readContract(
+  functionName: string,
+  args: CalldataEncodable[] = [],
+) {
   if (!isLive()) throw new Error("TermsGuard contract address is not configured.");
   const { createClient } = await getSDK();
   const chain = await getChain();
@@ -55,13 +60,18 @@ export async function readContract(functionName: string, args: CalldataEncodable
   });
 }
 
-export async function writeContract(functionName: string, args: CalldataEncodable[] = []) {
+export async function writeContract(
+  functionName: string,
+  args: CalldataEncodable[] = [],
+) {
   if (!isLive()) throw new Error("TermsGuard contract address is not configured.");
   if (typeof window === "undefined" || !window.ethereum) {
     throw new Error("No browser wallet provider detected.");
   }
 
-  const accounts = await window.ethereum.request({ method: "eth_requestAccounts" });
+  const accounts = await window.ethereum.request({
+    method: "eth_requestAccounts",
+  });
   const account = accounts?.[0];
   if (!account) throw new Error("Wallet connection was cancelled.");
 
@@ -86,9 +96,18 @@ export async function writeContract(functionName: string, args: CalldataEncodabl
 }
 
 export type TransactionStage =
-  | "PENDING" | "PROPOSING" | "COMMITTING" | "REVEALING" | "ACCEPTED"
-  | "FINALIZED" | "CANCELED" | "UNDETERMINED" | "READY_TO_FINALIZE"
-  | "VALIDATORS_TIMEOUT" | "LEADER_TIMEOUT" | "UNKNOWN";
+  | "PENDING"
+  | "PROPOSING"
+  | "COMMITTING"
+  | "REVEALING"
+  | "ACCEPTED"
+  | "FINALIZED"
+  | "CANCELED"
+  | "UNDETERMINED"
+  | "READY_TO_FINALIZE"
+  | "VALIDATORS_TIMEOUT"
+  | "LEADER_TIMEOUT"
+  | "UNKNOWN";
 
 export type TransactionProgress = {
   hash: string;
@@ -113,53 +132,81 @@ const CODE_TO_STATUS: Record<number, TransactionStage> = {
   13: "LEADER_TIMEOUT",
 };
 
-function normalizeStatus(value: unknown, statusCode?: unknown): TransactionStage {
+function normalizeStatus(
+  value: unknown,
+  statusCode?: unknown,
+): TransactionStage {
   if (typeof value === "string") {
     const s = value.toUpperCase().replace(/\s+/g, "_");
-    if (s in CODE_TO_STATUS) return CODE_TO_STATUS[Number(s)];
+    if (/^\d+$/.test(s) && CODE_TO_STATUS[Number(s)]) {
+      return CODE_TO_STATUS[Number(s)];
+    }
     const allowed: TransactionStage[] = [
-      "PENDING","PROPOSING","COMMITTING","REVEALING","ACCEPTED","FINALIZED",
-      "CANCELED","UNDETERMINED","READY_TO_FINALIZE","VALIDATORS_TIMEOUT","LEADER_TIMEOUT","UNKNOWN",
+      "PENDING",
+      "PROPOSING",
+      "COMMITTING",
+      "REVEALING",
+      "ACCEPTED",
+      "FINALIZED",
+      "CANCELED",
+      "UNDETERMINED",
+      "READY_TO_FINALIZE",
+      "VALIDATORS_TIMEOUT",
+      "LEADER_TIMEOUT",
+      "UNKNOWN",
     ];
-    if (allowed.includes(s as TransactionStage)) return s as TransactionStage;
+    if (allowed.includes(s as TransactionStage)) {
+      return s as TransactionStage;
+    }
   }
-  const code = typeof statusCode === "bigint" ? Number(statusCode) : Number(statusCode);
-  return Number.isFinite(code) && CODE_TO_STATUS[code] ? CODE_TO_STATUS[code] : "UNKNOWN";
+
+  const code =
+    typeof statusCode === "bigint" ? Number(statusCode) : Number(statusCode);
+
+  return Number.isFinite(code) && CODE_TO_STATUS[code]
+    ? CODE_TO_STATUS[code]
+    : "UNKNOWN";
 }
 
-export async function getTransactionProgress(client: any, hash: string): Promise<TransactionProgress> {
+export async function getTransactionProgress(
+  client: any,
+  hash: string,
+): Promise<TransactionProgress> {
   try {
-    // getTransaction is supported by GenLayerJS and exposes consensus status.
     const tx = await client.getTransaction({ hash });
-    const statusCode = typeof tx?.status === "number" || typeof tx?.status === "bigint"
-      ? Number(tx.status)
-      : typeof tx?.statusCode === "number" || typeof tx?.statusCode === "bigint"
-        ? Number(tx.statusCode)
-        : undefined;
-    const status = normalizeStatus(tx?.statusName ?? tx?.statusText ?? tx?.status, statusCode);
+    const statusCode =
+      typeof tx?.status === "number" || typeof tx?.status === "bigint"
+        ? Number(tx.status)
+        : typeof tx?.statusCode === "number" ||
+            typeof tx?.statusCode === "bigint"
+          ? Number(tx.statusCode)
+          : undefined;
+
+    const status = normalizeStatus(
+      tx?.statusName ?? tx?.statusText ?? tx?.status,
+      statusCode,
+    );
+
     return { hash, status, statusCode };
   } catch {
-    // A just-submitted transaction can briefly be unavailable from a read RPC.
     return { hash, status: "PENDING", statusCode: 1 };
   }
 }
 
 const TERMINAL_FAILURES = new Set<TransactionStage>([
-  "CANCELED", "UNDETERMINED", "VALIDATORS_TIMEOUT", "LEADER_TIMEOUT",
+  "CANCELED",
+  "UNDETERMINED",
+  "VALIDATORS_TIMEOUT",
+  "LEADER_TIMEOUT",
 ]);
 
-/**
- * Wait until consensus is ACCEPTED, not FINALIZED.
- * Accepted state is already readable on GenLayer, so the UI can update without
- * the old 15-minute FINALIZED timeout. Finalization can continue on-chain.
- */
 export async function waitForAccepted(
   client: any,
   hash: string,
   onProgress?: (progress: TransactionProgress) => void,
 ) {
   const intervalMs = 3000;
-  const maxChecks = 200; // 10 minutes
+  const maxChecks = 200;
 
   for (let attempt = 0; attempt < maxChecks; attempt += 1) {
     const progress = await getTransactionProgress(client, hash);
@@ -167,20 +214,34 @@ export async function waitForAccepted(
 
     if (progress.status === "ACCEPTED" || progress.status === "FINALIZED") {
       const { TransactionStatus } = await import("genlayer-js/types");
+
       const receipt = await client.waitForTransactionReceipt({
         hash,
-        status: progress.status === "FINALIZED"
-          ? TransactionStatus.FINALIZED
-          : TransactionStatus.ACCEPTED,
+        status:
+          progress.status === "FINALIZED"
+            ? TransactionStatus.FINALIZED
+            : TransactionStatus.ACCEPTED,
         interval: intervalMs,
         retries: 20,
         fullTransaction: false,
       });
 
-      const execution = String(receipt?.txExecutionResultName ?? "").toUpperCase();
-      if (execution.includes("ERROR")) {
-        throw new Error("GenLayer accepted the transaction but contract execution failed.");
+      const execution = String(
+        receipt?.txExecutionResultName ??
+          receipt?.txExecutionResult ??
+          "",
+      ).toUpperCase();
+
+      if (
+        execution.includes("ERROR") ||
+        execution.includes("FAILED") ||
+        execution.includes("REVERT")
+      ) {
+        throw new Error(
+          `GenLayer accepted the transaction but contract execution failed: ${execution}`,
+        );
       }
+
       return receipt;
     }
 
@@ -194,15 +255,75 @@ export async function waitForAccepted(
   throw new Error(`Transaction is still processing. Hash: ${hash}`);
 }
 
-export const waitFinalized = waitForAccepted;
+/**
+ * Finalization is watched separately from the application write.
+ * A slow FINALIZED transition must not be reported as a contract failure.
+ */
+export async function watchFinalized(
+  client: any,
+  hash: string,
+  onProgress?: (progress: TransactionProgress) => void,
+) {
+  const intervalMs = 5000;
+  const maxChecks = 240;
 
-export function contractAddress() { return CONTRACT_ADDRESS; }
-export function networkName() { return NETWORK; }
+  for (let attempt = 0; attempt < maxChecks; attempt += 1) {
+    const progress = await getTransactionProgress(client, hash);
+    onProgress?.(progress);
+
+    if (progress.status === "FINALIZED") return progress;
+    if (TERMINAL_FAILURES.has(progress.status)) return progress;
+
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+
+  return { hash, status: "UNKNOWN" as TransactionStage };
+}
+
+/**
+ * Wait for the contract state to become visible after ACCEPTED.
+ * This fixes the race where refresh() runs too early and still reads the old state.
+ */
+export async function waitForState(
+  readState: () => Promise<any>,
+  predicate: (value: any) => boolean,
+  options: { intervalMs?: number; maxChecks?: number } = {},
+) {
+  const intervalMs = options.intervalMs ?? 2500;
+  const maxChecks = options.maxChecks ?? 40;
+  let lastValue: any;
+
+  for (let i = 0; i < maxChecks; i += 1) {
+    try {
+      lastValue = await readState();
+      if (predicate(lastValue)) return lastValue;
+    } catch {
+      // RPC/state propagation can lag immediately after ACCEPTED.
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+
+  return lastValue;
+}
+
+export const waitFinalized = watchFinalized;
+
+export function contractAddress() {
+  return CONTRACT_ADDRESS;
+}
+
+export function networkName() {
+  return NETWORK;
+}
 
 declare global {
   interface Window {
     ethereum?: {
-      request: (args: { method: string; params?: unknown[] }) => Promise<any>;
+      request: (args: {
+        method: string;
+        params?: unknown[];
+      }) => Promise<any>;
     };
   }
 }
