@@ -1,16 +1,26 @@
 {
-  "name": "termsguard-genlayer",
+  "name": "termsguard-ready",
+  "version": "2.0.0",
   "private": true,
-  "version": "0.2.0",
   "scripts": {
-    "test:direct": "pytest tests/direct -v",
-    "test:integration": "gltest tests/integration -v -s",
-    "lint:contract": "genvm-lint check contracts/terms_guard.py",
-    "deploy": "genlayer deploy --contract contracts/terms_guard.py",
-    "frontend:dev": "npm --prefix frontend run dev",
-    "frontend:build": "npm --prefix frontend run build"
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "genlayer-js": "1.1.8",
+    "next": "16.3.3",
+    "react": "19.2.0",
+    "react-dom": "19.2.0"
   },
   "devDependencies": {
-    "genlayer": "latest"
+    "@types/node": "24.10.1",
+    "@types/react": "19.2.7",
+    "@types/react-dom": "19.2.3",
+    "typescript": "5.9.3"
+  },
+  "engines": {
+    "node": ">=20.9.0"
   }
 }

@@ -1,210 +1,107 @@
-# TermsGuard 2.0 — GenLayer Semantic Commitment Registry
+# TermsGuard Ready
 
-TermsGuard turns public project promises, policies and milestones into a verifiable on-chain history.
+This is a production-oriented TermsGuard frontend and GenLayer contract redesign.
+It is intentionally not a copy of the old UI. The user flow is built around the
+job to be done:
 
-Instead of a simple website diff, the dApp records a baseline, registers commitments, fetches current public evidence and asks GenLayer validators to adjudicate semantic meaning.
+1. Paste a public website.
+2. Protect website.
+3. TermsGuard captures a consensus-backed baseline and discovers meaningful public commitments.
+4. Verify current website.
+5. Review useful evidence and status in Simple, Advanced or Audit mode.
 
-## Core features
+## Modes
 
-- **Project Registry** — register a public source such as terms, docs, roadmap, privacy or tokenomics.
-- **Consensus Baseline** — fetch and store a bounded baseline through GenLayer web access.
-- **Policy Verification** — detect material changes to fees, eligibility, governance, privacy, tokenomics, deadlines and legal/security conditions.
-- **Commitment Registry** — record a public statement plus an optional deadline.
-- **Commitment Adjudication** — classify evidence as `FULFILLED`, `PARTIAL`, `OPEN`, `BROKEN` or `UNVERIFIABLE`.
-- **Audit Trail** — store every verdict with score, summary and evidence.
-- **Demo Mode** — the frontend works before a contract address is configured.
-- **GenLayer Live Mode** — set the deployed contract address and the same UI reads/writes the Intelligent Contract.
+### Simple
+One workflow for normal users. The UI hides contract mechanics and explains what
+is happening in plain language.
 
-## Architecture
+### Advanced
+Manual commitment anchoring, source category controls and direct verification.
 
-```text
-Next.js 15 + TypeScript
-        │
-        │ GenLayerJS
-        ▼
-TermsGuard Intelligent Contract
-        │
-        ├── public web source
-        ├── LLM semantic analysis
-        └── GenLayer equivalence / validator consensus
-        │
-        ▼
-On-chain project + commitment + verification history
-```
+### Audit
+Contract address, network, consensus-backed verification records and evidence.
 
-## Requirements
+## Important architecture
 
-- Node.js 20+
-- Python 3.12+
-- GenLayer CLI for contract work
-- A browser wallet compatible with your GenLayer environment
+The contract keeps the original storage layout:
 
-The official GenLayer boilerplate currently uses Python 3.12+, a production Next.js 15 frontend with TypeScript, direct tests, integration tests, linting and deployment tooling. This project follows that current structure while keeping the UI intentionally dependency-light. 
+- Project
+- Commitment
+- Verification
 
-## 1. Install
+The v2 code adds behavior without changing those persistent fields, so it is suitable
+for an authorized GenLayer upgrade if the deployed contract's upgrader account is yours.
+GenLayer only allows an address present in the contract's upgraders list to modify locked
+code; if your wallet is not the authorized upgrader, deploy a new instance instead.
 
-```bash
-git clone YOUR_GITHUB_REPOSITORY
-cd termsguard-genlayer
-python -m venv .venv
-```
+## Data freshness
 
-Windows PowerShell:
+The contract uses `gl.nondet.web.render(..., mode="text", wait_after_loaded="3s")`
+for the current public page. It does not store a fake demo result in live mode.
 
-```powershell
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-```
+The verification transaction is intentionally split into:
+- automatic baseline + commitment discovery
+- current verification
 
-Linux/macOS:
+That keeps the heavy web/LLM work bounded and makes the UI easier to recover from.
 
-```bash
-source .venv/bin/activate
-pip install -r requirements.txt
-```
+## Transaction behavior
 
-Install the GenLayer CLI:
+The frontend treats ACCEPTED and FINALIZED as different states.
 
-```bash
-npm install -g genlayer
-```
+ACCEPTED means the contract execution has been accepted and the new state can be read.
+FINALIZED means the appeal/finality window has completed.
 
-Install frontend dependencies:
+A slow FINALIZED transition is never shown as a contract failure. The app continues
+watching it in the background. This avoids the old false timeout behavior.
 
-```bash
-cd frontend
-npm install
-cd ..
-```
+## Deploy
 
-## 2. Validate the contract
+### 1. Contract
 
-Run direct tests:
+Use `contracts/terms_guard.py` in GenLayer Studio.
 
-```bash
-pytest tests/direct -v
-```
+If you own the deployed contract's upgrader account, upgrade the existing contract.
+The existing storage layout is preserved.
 
-Run the GenLayer linter if the CLI is installed:
+If Studio says `Only contract deployer can upgrade`, the connected account is not
+authorized. Do not keep retrying with a different code file. Deploy this v2 contract
+as a new instance and use its address in Vercel.
 
-```bash
-genvm-lint check contracts/terms_guard.py
-```
+### 2. Frontend
 
-If your installed CLI exposes the linter under a different executable, use the command shown by `genlayer --help`.
+Set:
 
-## 3. Deploy to hosted GenLayer Studio / Studionet
+`NEXT_PUBLIC_CONTRACT_ADDRESS=<your deployed contract address>`
 
-The simplest path is the hosted Studio:
-
-1. Open GenLayer Studio.
-2. Create a new Intelligent Contract.
-3. Add `contracts/terms_guard.py` from file.
-4. Run/debug it.
-5. Deploy it.
-6. Copy the resulting contract address.
-
-The contract constructor has no arguments.
-
-CLI alternative:
-
-```bash
-genlayer network studionet
-genlayer deploy --contract contracts/terms_guard.py
-```
-
-For final testing, use Testnet Bradbury according to the current GenLayer network configuration.
-
-## 4. Configure the frontend
-
-Create:
-
-```text
-frontend/.env.local
-```
-
-with:
-
-```env
-NEXT_PUBLIC_CONTRACT_ADDRESS=0xYOUR_DEPLOYED_CONTRACT
-NEXT_PUBLIC_NETWORK=studionet
-```
+`NEXT_PUBLIC_NETWORK=studionet`
 
 Then:
 
-```bash
-cd frontend
-npm run dev
-```
+`npm install`
 
-Open `http://localhost:3000`.
+`npm run typecheck`
 
-If the contract address is empty, the app intentionally stays in Demo Mode.
+`npm run build`
 
-## 5. Vercel deployment — free frontend
+For Vercel:
+- Framework: Next.js
+- Root Directory: `frontend` if these files are inside an existing monorepo frontend folder
+- Build Command: `npm run build`
+- Install Command: `npm install`
 
-1. Push the repository to GitHub.
-2. Import the repository into Vercel.
-3. Set **Root Directory** to `frontend`.
-4. Framework preset: Next.js.
-5. Add environment variables:
+## First real test
 
-```text
-NEXT_PUBLIC_CONTRACT_ADDRESS = your deployed address
-NEXT_PUBLIC_NETWORK = studionet
-```
+Use a public project page that actually contains measurable promises, fees, dates,
+or policy conditions. Avoid a GitHub repository shell as the first test because
+GitHub HTML can be mostly navigation/scripts rather than readable project content.
 
-6. Deploy.
+A good test is:
+- baseline the page
+- verify without changing it → expect NO_CHANGE or fulfilled/open commitment states
+- edit the public page so one measurable promise changes
+- verify again → expect LOW/HIGH/CRITICAL or BROKEN depending on the evidence
 
-The frontend does not need a private key. Transactions are signed in the user's browser wallet.
-
-## 6. Recommended testing order
-
-```text
-1. Demo Mode UI
-2. Direct contract tests
-3. GenVM linter
-4. Hosted Studio deployment
-5. Register project
-6. Capture baseline
-7. Verify policy
-8. Add commitment
-9. Verify commitment
-10. Deploy frontend to Vercel
-11. Final test on Testnet Bradbury
-```
-
-## Contract methods
-
-### Views
-
-- `get_project_count()`
-- `get_project(project_id)`
-- `get_commitment_count()`
-- `get_commitment(commitment_id)`
-- `get_verification_count()`
-- `get_verification(verification_id)`
-
-### Writes
-
-- `create_project(name, url, category)`
-- `capture_baseline(project_id)`
-- `add_commitment(project_id, statement, deadline)`
-- `verify_project(project_id)`
-- `verify_commitment(commitment_id)`
-
-## Important limitations
-
-1. The contract stores bounded page snapshots. It is not a full web archive.
-2. Public pages can change or become unavailable; `UNVERIFIABLE` is a valid outcome.
-3. A commitment is only as strong as the public evidence available to validators.
-4. Semantic verification is probabilistic/consensus-based, not a legal opinion.
-5. For production use, add source allowlists, stronger prompt-injection defenses, per-project authorization and a dedicated evidence hashing layer.
-
-## Why GenLayer is essential
-
-The application needs to decide whether two pieces of public language are materially equivalent and whether a current page actually supports a natural-language commitment. Those are semantic judgments over live web data rather than deterministic key/value lookups. GenLayer Intelligent Contracts can access web data and use validator consensus around non-deterministic web/LLM execution.
-
-## License
-
-MIT
+Do not expect every public page to produce a positive result. UNVERIFIABLE is a valid
+security outcome when the source does not contain enough evidence.
