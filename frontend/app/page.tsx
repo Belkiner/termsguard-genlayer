@@ -150,6 +150,19 @@ export default function Home() {
     }
   }
 
+  async function findProjectIdByUrl(targetUrl: string) {
+    const normalized = targetUrl.trim().replace(/\/$/, "");
+    const count = Number(await readContract("get_project_count"));
+
+    for (let i = 0; i < Math.min(count, 100); i += 1) {
+      const raw = await readContract("get_project", [i]);
+      const existingUrl = String(field(raw, 1, "url", "")).replace(/\/$/, "");
+      if (existingUrl === normalized) return i;
+    }
+
+    return null;
+  }
+
   async function connectWallet() {
     try {
       if (!window.ethereum) throw new Error("Install a compatible browser wallet.");
@@ -183,10 +196,14 @@ export default function Home() {
 
       void watchFinalized(client, hash, setTx).then((final) => {
         if (final.status === "FINALIZED") {
-          setNotice(`${success} Finalized on GenLayer.`);
+          setTx((current) => (current?.hash === hash ? final : current));
           void refresh(true);
+          setNotice(`${success} Finalized on GenLayer.`);
         }
-        window.setTimeout(() => setTx(null), 1600);
+
+        window.setTimeout(() => {
+          setTx((current) => (current?.hash === hash ? null : current));
+        }, 1600);
       });
 
       return { hash };
@@ -215,9 +232,9 @@ export default function Home() {
       })();
 
     try {
-      let projectId = selected?.id;
+      let projectId = await findProjectIdByUrl(url.trim());
 
-      if (projectId === undefined || projectId === null || url.trim() !== selected?.url) {
+      if (projectId === null) {
         const before = Number(await readContract("get_project_count"));
         await execute(
           "create_project",
@@ -225,9 +242,16 @@ export default function Home() {
           "Website registered.",
           async () => Number(await readContract("get_project_count")) > before,
         );
-        projectId = Number(await readContract("get_project_count")) - 1;
-        setSelectedId(projectId);
+
+        // create_project is idempotent, so never assume the new project is
+        // count - 1. Resolve the actual ID from the chain.
+        projectId = await findProjectIdByUrl(url.trim());
+        if (projectId === null) {
+          throw new Error("The project was created, but its on-chain ID could not be read yet.");
+        }
       }
+
+      setSelectedId(projectId);
 
       await execute(
         "auto_capture",
@@ -239,9 +263,23 @@ export default function Home() {
         },
       );
 
-      setNotice("Monitoring is ready. Run Verify now to check the current commitments and policies.");
+      // The normal user flow finishes with a first real verification
+      // automatically. GenLayer still requires a separate signed transaction
+      // for the verification write, so the wallet will ask for confirmation
+      // again rather than hiding an on-chain action.
+      const beforeVerifications = Number(await readContract("get_verification_count"));
+      await execute(
+        "verify_project",
+        [projectId],
+        "Initial verification completed.",
+        async () => Number(await readContract("get_verification_count")) > beforeVerifications,
+      );
+
       setMode("simple");
       await refresh(true);
+      setNotice(
+        "Monitoring is active. The baseline and first live verification are recorded on GenLayer.",
+      );
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Automatic setup failed.");
     }
@@ -387,12 +425,12 @@ export default function Home() {
             <div className="simple-view">
               <div className="card intro-card">
                 <span className="label">START MONITORING</span>
-                <h2>One website. One verification trail.</h2>
-                <p>TermsGuard will do the setup for you. You only confirm the required on-chain transactions.</p>
+                <h2>One website. One click to start monitoring.</h2>
+                <p>TermsGuard captures the public baseline and runs the first live verification for you. You only approve the on-chain transactions.</p>
                 <div className="url-row">
                   <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://your-project.com" />
                   <button className="button primary large" disabled={busy || !live} onClick={() => void protectWebsite()}>
-                    {busy ? "Working…" : "Protect website"}
+                    {busy ? "Working…" : "Protect & verify"}
                   </button>
                 </div>
                 {!live && <div className="warning">The frontend is ready, but no valid deployed contract address is configured.</div>}
@@ -417,7 +455,7 @@ export default function Home() {
                     <div><span>Score</span><strong>{stats.score}/100</strong></div>
                   </div>
                   <button className="button dark large" disabled={busy || !selected.baseline} onClick={() => void verifySelected()}>
-                    {busy ? "Verifying…" : "Verify current website"}
+                    {busy ? "Verifying…" : "Verify again"}
                   </button>
                   <p className="help">Verification compares the live public page against the stored baseline and registered commitments using GenLayer consensus.</p>
                 </div>

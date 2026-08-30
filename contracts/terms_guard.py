@@ -1,5 +1,5 @@
-# TermsGuard v2
 # { "Depends": "py-genlayer:1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6" }
+# TermsGuard v3
 
 from genlayer import *
 from dataclasses import dataclass
@@ -102,10 +102,18 @@ class TermsGuard(gl.Contract):
         if not (url.startswith("https://") or url.startswith("http://")):
             raise gl.vm.UserError("URL must start with http:// or https://")
 
+        # Make the main user flow idempotent. Re-submitting the same public
+        # URL updates the existing monitoring target instead of creating
+        # another duplicate project.
+        normalized_url = url.rstrip("/")
+        for i in range(len(self.projects)):
+            if self.projects[i].url.rstrip("/") == normalized_url:
+                return u32(i)
+
         self.projects.append(
             Project(
                 name=name[:80],
-                url=url[:300],
+                url=normalized_url[:300],
                 category=category[:40],
                 baseline="",
                 status="PENDING",
@@ -157,7 +165,8 @@ If the page has no clear commitment, return an empty commitments array.
 """
 
             raw = gl.nondet.exec_prompt(
-                prompt + "\nSOURCE URL:\n" + url + "\nCURRENT PAGE TEXT:\n" + page
+                prompt + "\nSOURCE URL:\n" + url + "\nCURRENT PAGE TEXT:\n" + page,
+                response_format="json",
             )
             return raw
 
@@ -172,7 +181,10 @@ If the page has no clear commitment, return an empty commitments array.
         )
 
         try:
-            data = json.loads(str(raw_result))
+            if isinstance(raw_result, dict):
+                data = raw_result
+            else:
+                data = json.loads(str(raw_result))
         except Exception:
             raise gl.vm.UserError("Consensus could not produce valid audit JSON")
 
@@ -326,7 +338,8 @@ Scores must match the conclusion.
                 + "\nREGISTERED COMMITMENTS:\n"
                 + commitments_json
                 + "\nCURRENT PUBLIC PAGE:\n"
-                + page
+                + page,
+                response_format="json",
             )
 
         raw_result = gl.eq_principle.prompt_comparative(
@@ -339,7 +352,10 @@ Scores must match the conclusion.
         )
 
         try:
-            data = json.loads(str(raw_result))
+            if isinstance(raw_result, dict):
+                data = raw_result
+            else:
+                data = json.loads(str(raw_result))
         except Exception:
             raise gl.vm.UserError("Consensus could not produce valid verification JSON")
 

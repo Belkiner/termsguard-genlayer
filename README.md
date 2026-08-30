@@ -1,107 +1,117 @@
-# TermsGuard Ready
+# TermsGuard
 
-This is a production-oriented TermsGuard frontend and GenLayer contract redesign.
-It is intentionally not a copy of the old UI. The user flow is built around the
-job to be done:
+TermsGuard turns a public project URL into a consensus-backed monitoring record.
 
-1. Paste a public website.
-2. Protect website.
-3. TermsGuard captures a consensus-backed baseline and discovers meaningful public commitments.
-4. Verify current website.
-5. Review useful evidence and status in Simple, Advanced or Audit mode.
+## User flow
 
-## Modes
+The normal flow is intentionally one-click:
 
-### Simple
-One workflow for normal users. The UI hides contract mechanics and explains what
-is happening in plain language.
+1. Paste a public URL.
+2. Click **Protect & verify**.
+3. Approve the on-chain transaction for baseline capture.
+4. Approve the on-chain transaction for the first live verification.
+5. TermsGuard reads the current contract state and keeps watching the transaction until finalization.
 
-### Advanced
-Manual commitment anchoring, source category controls and direct verification.
+The frontend distinguishes **ACCEPTED** from **FINALIZED**. Acceptance means GenLayer has accepted the execution; finalization is a later lifecycle stage. A slow finalization is not reported as a contract failure.
 
-### Audit
-Contract address, network, consensus-backed verification records and evidence.
+## What the contract actually checks
 
-## Important architecture
+At baseline time, GenLayer renders the public page and extracts:
 
-The contract keeps the original storage layout:
+- material policy facts
+- measurable public commitments
+- deadlines when explicitly stated
+
+At verification time, GenLayer renders the same URL again and compares the live page with the stored baseline and registered commitments.
+
+Commitment results are:
+
+- `FULFILLED` — current evidence explicitly supports completion
+- `PARTIAL` — some evidence supports the promise
+- `OPEN` — the promise is still future-facing or completion is not demonstrated
+- `BROKEN` — current evidence contradicts the promise or a stated deadline is missed
+- `UNVERIFIABLE` — the source does not contain enough evidence
+
+`UNVERIFIABLE` is a valid result. It is not silently converted into success.
+
+## Important: live data
+
+There are no demo results in the live path. The contract uses GenLayer web rendering at transaction execution time and asks the LLM for structured JSON. `response_format="json"` is used to reduce malformed model output, while comparative consensus checks independent results. GenLayer documents this as the recommended pattern for structured LLM calls. 
+
+## Contract
+
+The first line of `contracts/terms_guard.py` is mandatory:
+
+```python
+# { "Depends": "py-genlayer:1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6" }
+```
+
+Do not remove it. Removing it causes:
+
+`VM_ERROR invalid_contract absent_runner_comment`
+
+The contract keeps the existing storage structures:
 
 - Project
 - Commitment
 - Verification
 
-The v2 code adds behavior without changing those persistent fields, so it is suitable
-for an authorized GenLayer upgrade if the deployed contract's upgrader account is yours.
-GenLayer only allows an address present in the contract's upgraders list to modify locked
-code; if your wallet is not the authorized upgrader, deploy a new instance instead.
+The v2 changes are behavior-only within those structures, so an authorized GenLayer upgrade can preserve existing state.
 
-## Data freshness
+If Studio reports `Only contract deployer can upgrade`, the connected wallet is not authorized to upgrade that deployed instance. Deploy the fixed contract as a new instance and put its address in Vercel.
 
-The contract uses `gl.nondet.web.render(..., mode="text", wait_after_loaded="3s")`
-for the current public page. It does not store a fake demo result in live mode.
+## Frontend
 
-The verification transaction is intentionally split into:
-- automatic baseline + commitment discovery
-- current verification
+The frontend uses static GenLayer chain definitions instead of dynamically indexing the `chains` module. This avoids the TypeScript error where `createClient({ chain })` receives `{}` instead of a typed GenLayer chain.
 
-That keeps the heavy web/LLM work bounded and makes the UI easier to recover from.
+Required Vercel variables:
 
-## Transaction behavior
+```text
+NEXT_PUBLIC_CONTRACT_ADDRESS=<deployed contract address>
+NEXT_PUBLIC_NETWORK=studionet
+```
 
-The frontend treats ACCEPTED and FINALIZED as different states.
+For Vercel, set the project Root Directory to:
 
-ACCEPTED means the contract execution has been accepted and the new state can be read.
-FINALIZED means the appeal/finality window has completed.
+```text
+frontend
+```
 
-A slow FINALIZED transition is never shown as a contract failure. The app continues
-watching it in the background. This avoids the old false timeout behavior.
+Build command:
 
-## Deploy
+```text
+npm run build
+```
 
-### 1. Contract
+Install command:
 
-Use `contracts/terms_guard.py` in GenLayer Studio.
+```text
+npm install
+```
 
-If you own the deployed contract's upgrader account, upgrade the existing contract.
-The existing storage layout is preserved.
+## Testing a real source
 
-If Studio says `Only contract deployer can upgrade`, the connected account is not
-authorized. Do not keep retrying with a different code file. Deploy this v2 contract
-as a new instance and use its address in Vercel.
+Do not use a GitHub repository shell as the first verification target. GitHub pages can return mostly navigation, scripts and framework HTML to the GenLayer renderer.
 
-### 2. Frontend
+Use a public Terms, policy, roadmap or documentation page that contains an explicit measurable statement.
 
-Set:
+A good test sequence is:
 
-`NEXT_PUBLIC_CONTRACT_ADDRESS=<your deployed contract address>`
+1. Register the public page.
+2. Let **Protect & verify** capture the baseline and run the first verification.
+3. Open **Advanced** or **Audit** and inspect the evidence.
+4. Change one public statement on a page you control, or use a real public page whose documented policy/roadmap has actually changed.
+5. Run **Verify again**.
+6. Confirm that the result changes only when the current source provides evidence for that change.
 
-`NEXT_PUBLIC_NETWORK=studionet`
+For a page with no explicit evidence for the commitment being tested, `UNVERIFIABLE` is expected and correct.
 
-Then:
+## Verification and finality
 
-`npm install`
+A GenLayer write returns a transaction hash first. State changes are not instant. The app waits for consensus acceptance, refreshes state, and continues monitoring finalization in the background.
 
-`npm run typecheck`
+The GenLayer SDK documents both `ACCEPTED` and `FINALIZED` transaction stages and recommends checking the execution result before treating a transaction as successful.
 
-`npm run build`
+## Local checks
 
-For Vercel:
-- Framework: Next.js
-- Root Directory: `frontend` if these files are inside an existing monorepo frontend folder
-- Build Command: `npm run build`
-- Install Command: `npm install`
-
-## First real test
-
-Use a public project page that actually contains measurable promises, fees, dates,
-or policy conditions. Avoid a GitHub repository shell as the first test because
-GitHub HTML can be mostly navigation/scripts rather than readable project content.
-
-A good test is:
-- baseline the page
-- verify without changing it → expect NO_CHANGE or fulfilled/open commitment states
-- edit the public page so one measurable promise changes
-- verify again → expect LOW/HIGH/CRITICAL or BROKEN depending on the evidence
-
-Do not expect every public page to produce a positive result. UNVERIFIABLE is a valid
-security outcome when the source does not contain enough evidence.
+Python source files are syntax-checked in this package. Full frontend build verification requires installing the locked npm dependencies because they are not vendored in the ZIP.
