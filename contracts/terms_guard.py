@@ -243,7 +243,9 @@ If the page has no clear commitment, return an empty commitments array.
 
         self.projects[project_id].baseline = baseline[:10000]
         self.projects[project_id].status = "BASELINED"
-        self.projects[project_id].score = u8(100)
+        # A captured baseline is not a health score. The score becomes meaningful
+        # only after a verification result is available.
+        self.projects[project_id].score = u8(0)
         self.projects[project_id].summary = (
             "Baseline captured and public commitments discovered with GenLayer consensus."
         )

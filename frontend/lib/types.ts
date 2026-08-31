@@ -33,14 +33,21 @@ export type Verification = {
 };
 
 export type TxStage =
+  | "UNINITIALIZED"
   | "PENDING"
   | "PROPOSING"
   | "COMMITTING"
   | "REVEALING"
+  | "LEADER_REVEALING"
   | "ACCEPTED"
+  | "UNDETERMINED"
   | "FINALIZED"
   | "CANCELED"
-  | "UNDETERMINED"
+  | "APPEAL_REVEALING"
+  | "APPEAL_COMMITTING"
+  | "READY_TO_FINALIZE"
+  | "VALIDATORS_TIMEOUT"
+  | "LEADER_TIMEOUT"
   | "UNKNOWN";
 
 export type TxProgress = {

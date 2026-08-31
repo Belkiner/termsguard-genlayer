@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   contractAddress,
   isConfigured,
@@ -89,11 +89,23 @@ export default function Home() {
 
   const [wallet, setWallet] = useState("");
   const [busy, setBusy] = useState(false);
+  const [loading, setLoading] = useState(false);
   const [notice, setNotice] = useState("");
   const [tx, setTx] = useState<TxProgress | null>(null);
+  const refreshInFlight = useRef(false);
 
   const live = isConfigured();
   const selected = projects.find((p) => p.id === selectedId) ?? projects[0];
+
+  const txProgress = tx
+    ? ({
+        UNINITIALIZED: 5, PENDING: 12, PROPOSING: 28, COMMITTING: 45,
+        REVEALING: 62, LEADER_REVEALING: 58, ACCEPTED: 78,
+        READY_TO_FINALIZE: 90, FINALIZED: 100, CANCELED: 100,
+        UNDETERMINED: 70, APPEAL_REVEALING: 70, APPEAL_COMMITTING: 76,
+        VALIDATORS_TIMEOUT: 100, LEADER_TIMEOUT: 100, UNKNOWN: 15,
+      } as Record<string, number>)[tx.status] ?? 15
+    : 0;
 
   const stats = useMemo(() => {
     const items = selected ? commitments.filter((c) => c.projectId === selected.id) : commitments;
@@ -110,12 +122,36 @@ export default function Home() {
     if (live) void refresh(true);
   }, [live]);
 
+  useEffect(() => {
+    const ethereum = window.ethereum;
+    if (!ethereum?.on) return;
+
+    const handleAccountsChanged = (accounts: string[]) => {
+      setWallet(accounts?.[0] ?? "");
+      if (!accounts?.[0]) setNotice("Wallet disconnected.");
+    };
+    const handleChainChanged = () => {
+      setNotice("Wallet network changed. TermsGuard will use the configured GenLayer network.");
+      void refresh(true);
+    };
+
+    ethereum.on("accountsChanged", handleAccountsChanged);
+    ethereum.on("chainChanged", handleChainChanged);
+    return () => {
+      ethereum.removeListener?.("accountsChanged", handleAccountsChanged);
+      ethereum.removeListener?.("chainChanged", handleChainChanged);
+    };
+  }, [live]);
+
   async function refresh(silent = false) {
     if (!live) {
       if (!silent) setNotice("Add your deployed contract address in Vercel Environment Variables.");
       return;
     }
+    if (refreshInFlight.current) return;
 
+    refreshInFlight.current = true;
+    setLoading(true);
     try {
       const [pc, cc, vc] = await Promise.all([
         readContract("get_project_count"),
@@ -123,23 +159,37 @@ export default function Home() {
         readContract("get_verification_count"),
       ]);
 
-      const nextProjects: Project[] = [];
-      const nextCommitments: Commitment[] = [];
-      const nextHistory: Verification[] = [];
+      const readRange = async <T,>(
+        count: number,
+        limit: number,
+        reader: (index: number) => Promise<T>,
+      ): Promise<T[]> => {
+        const total = Math.min(Math.max(0, count), limit);
+        const result: T[] = [];
+        const batchSize = 20;
+        for (let start = 0; start < total; start += batchSize) {
+          const indexes = Array.from(
+            { length: Math.min(batchSize, total - start) },
+            (_, offset) => start + offset,
+          );
+          result.push(...(await Promise.all(indexes.map(reader))));
+        }
+        return result;
+      };
 
-      for (let i = 0; i < Math.min(Number(pc), 100); i += 1) {
-        nextProjects.push(toProject(await readContract("get_project", [i]), i));
-      }
-      for (let i = 0; i < Math.min(Number(cc), 300); i += 1) {
-        nextCommitments.push(toCommitment(await readContract("get_commitment", [i]), i));
-      }
-      for (let i = 0; i < Math.min(Number(vc), 500); i += 1) {
-        nextHistory.push(toVerification(await readContract("get_verification", [i]), i));
-      }
+      const [rawProjects, rawCommitments, rawHistory] = await Promise.all([
+        readRange(Number(pc), 100, (i) => readContract("get_project", [i])),
+        readRange(Number(cc), 300, (i) => readContract("get_commitment", [i])),
+        readRange(Number(vc), 500, (i) => readContract("get_verification", [i])),
+      ]);
+
+      const nextProjects = rawProjects.map((raw, i) => toProject(raw, i));
+      const nextCommitments = rawCommitments.map((raw, i) => toCommitment(raw, i));
+      const nextHistory = rawHistory.map((raw, i) => toVerification(raw, i)).reverse();
 
       setProjects(nextProjects);
       setCommitments(nextCommitments);
-      setHistory(nextHistory.reverse());
+      setHistory(nextHistory);
 
       if (nextProjects.length && (selectedId === null || !nextProjects.some((p) => p.id === selectedId))) {
         setSelectedId(nextProjects[0].id);
@@ -147,17 +197,24 @@ export default function Home() {
       if (!silent) setNotice("Live state synchronized from GenLayer.");
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Could not read the contract state.");
+    } finally {
+      refreshInFlight.current = false;
+      setLoading(false);
     }
   }
 
   async function findProjectIdByUrl(targetUrl: string) {
     const normalized = targetUrl.trim().replace(/\/$/, "");
     const count = Number(await readContract("get_project_count"));
+    const indexes = Array.from({ length: Math.min(count, 100) }, (_, i) => i);
 
-    for (let i = 0; i < Math.min(count, 100); i += 1) {
-      const raw = await readContract("get_project", [i]);
-      const existingUrl = String(field(raw, 1, "url", "")).replace(/\/$/, "");
-      if (existingUrl === normalized) return i;
+    for (let start = 0; start < indexes.length; start += 20) {
+      const batch = indexes.slice(start, start + 20);
+      const rows = await Promise.all(batch.map((i) => readContract("get_project", [i])));
+      for (let offset = 0; offset < rows.length; offset += 1) {
+        const existingUrl = String(field(rows[offset], 1, "url", "")).replace(/\/$/, "");
+        if (existingUrl === normalized) return batch[offset];
+      }
     }
 
     return null;
@@ -195,15 +252,24 @@ export default function Home() {
       setNotice(`${success} The contract execution has been accepted.`);
 
       void watchFinalized(client, hash, setTx).then((final) => {
+        setTx((current) => (current?.hash === hash ? final : current));
+
         if (final.status === "FINALIZED") {
-          setTx((current) => (current?.hash === hash ? final : current));
           void refresh(true);
           setNotice(`${success} Finalized on GenLayer.`);
+          window.setTimeout(() => {
+            setTx((current) => (current?.hash === hash ? null : current));
+          }, 3000);
+          return;
         }
 
-        window.setTimeout(() => {
-          setTx((current) => (current?.hash === hash ? null : current));
-        }, 1600);
+        if (["CANCELED", "UNDETERMINED", "VALIDATORS_TIMEOUT", "LEADER_TIMEOUT"].includes(final.status)) {
+          setNotice(`Transaction ended with status ${final.status}. Inspect the transaction before retrying.`);
+        } else {
+          setNotice(`${success} is still processing. Keep this transaction open and do not resubmit it.`);
+        }
+      }).catch((error) => {
+        setNotice(error instanceof Error ? error.message : "Could not continue transaction monitoring.");
       });
 
       return { hash };
@@ -291,11 +357,12 @@ export default function Home() {
       return;
     }
     try {
+      const beforeVerifications = Number(await readContract("get_verification_count"));
       await execute(
         "verify_project",
         [selected.id],
         "Verification completed.",
-        async () => Number(await readContract("get_verification_count")) > history.length,
+        async () => Number(await readContract("get_verification_count")) > beforeVerifications,
       );
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Verification failed.");
@@ -372,7 +439,7 @@ export default function Home() {
 
         <div className="health-card">
           <span>TRUST SCORE</span>
-          <strong>{selected ? selected.score : "—"}<small>/100</small></strong>
+          <strong>{selected && selected.status !== "BASELINED" ? selected.score : "—"}<small>/100</small></strong>
           <p>{selected?.summary || "Add a public project to start monitoring."}</p>
           <div className="health-line"><i style={{ width: `${selected?.score ?? 0}%` }} /></div>
         </div>
@@ -382,7 +449,7 @@ export default function Home() {
         <aside className="sidebar">
           <div className="sidebar-head">
             <div><span className="label">MONITORED</span><h2>Projects</h2></div>
-            <button className="icon" onClick={() => void refresh()}>↻</button>
+            <button className="icon" disabled={loading} onClick={() => void refresh()}>{loading ? "…" : "↻"}</button>
           </div>
 
           {projects.length === 0 ? (
@@ -526,7 +593,7 @@ export default function Home() {
             <span className="label">TERMSGUARD · GENLAYER</span>
             <h2>{tx.status === "FINALIZED" ? "Verification finalized" : tx.status === "ACCEPTED" ? "Consensus accepted" : "Processing transaction"}</h2>
             <p className="tx-stage">{tx.status === "PENDING" ? "Queued" : tx.status === "PROPOSING" ? "Validators are proposing" : tx.status === "COMMITTING" ? "Validators are committing" : tx.status === "REVEALING" ? "Validators are revealing" : tx.status === "ACCEPTED" ? "State accepted; finality is still pending" : tx.status === "FINALIZED" ? "Finalized and immutable" : tx.status}</p>
-            <div className="tx-track"><i className={tx.status === "FINALIZED" ? "done" : ""} /></div>
+            <div className="tx-track"><i className={tx.status === "FINALIZED" ? "done" : ""} style={{ width: `${txProgress}%` }} /></div>
             <div className="tx-hash"><span>TRANSACTION</span><code>{tx.hash.slice(0, 12)}…{tx.hash.slice(-10)}</code></div>
             <small>Do not submit the same action again while this transaction is processing.</small>
           </div>

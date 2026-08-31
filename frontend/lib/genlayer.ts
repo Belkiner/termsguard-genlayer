@@ -115,34 +115,61 @@ export async function writeContract(
 
 function normalizeStatus(raw: unknown): TxStage {
   const value =
-    typeof raw === "number"
+    typeof raw === "number" || typeof raw === "bigint"
       ? String(raw)
       : String(raw ?? "UNKNOWN").toUpperCase();
 
-  // Some RPC/Studio versions expose the numeric transaction status.
-  // Keep these mappings here so a numeric status never becomes a false error.
-  if (value === "0") return "PENDING";
-  if (value === "1") return "PROPOSING";
-  if (value === "2") return "COMMITTING";
-  if (value === "3") return "ACCEPTED";
-  if (value === "4") return "FINALIZED";
-  if (value === "5") return "CANCELED";
-  if (value === "6") return "UNDETERMINED";
+  // Current GenLayer transaction status codes.
+  // 0 UNINITIALIZED, 1 PENDING, 2 PROPOSING, 3 COMMITTING,
+  // 4 REVEALING, 5 ACCEPTED, 6 UNDETERMINED, 7 FINALIZED,
+  // 8 CANCELED, 9 APPEAL_REVEALING, 10 APPEAL_COMMITTING,
+  // 11 READY_TO_FINALIZE, 12 VALIDATORS_TIMEOUT, 13 LEADER_TIMEOUT,
+  // 14 LEADER_REVEALING.
+  const numeric: Record<string, TxStage> = {
+    "0": "UNINITIALIZED",
+    "1": "PENDING",
+    "2": "PROPOSING",
+    "3": "COMMITTING",
+    "4": "REVEALING",
+    "5": "ACCEPTED",
+    "6": "UNDETERMINED",
+    "7": "FINALIZED",
+    "8": "CANCELED",
+    "9": "APPEAL_REVEALING",
+    "10": "APPEAL_COMMITTING",
+    "11": "READY_TO_FINALIZE",
+    "12": "VALIDATORS_TIMEOUT",
+    "13": "LEADER_TIMEOUT",
+    "14": "LEADER_REVEALING",
+  };
 
-  if (
-    value === "PENDING" ||
-    value === "PROPOSING" ||
-    value === "COMMITTING" ||
-    value === "REVEALING" ||
-    value === "ACCEPTED" ||
-    value === "FINALIZED" ||
-    value === "CANCELED" ||
-    value === "UNDETERMINED"
-  ) {
-    return value;
-  }
+  return numeric[value] ?? (
+    [
+      "UNINITIALIZED", "PENDING", "PROPOSING", "COMMITTING",
+      "REVEALING", "LEADER_REVEALING", "ACCEPTED", "UNDETERMINED",
+      "FINALIZED", "CANCELED", "APPEAL_REVEALING", "APPEAL_COMMITTING",
+      "READY_TO_FINALIZE", "VALIDATORS_TIMEOUT", "LEADER_TIMEOUT",
+    ].includes(value)
+      ? (value as TxStage)
+      : "UNKNOWN"
+  );
+}
 
-  return "UNKNOWN";
+function normalizeExecution(raw: unknown): string {
+  const value =
+    typeof raw === "number" || typeof raw === "bigint"
+      ? String(raw)
+      : String(raw ?? "").toUpperCase();
+
+  const numeric: Record<string, string> = {
+    "0": "NOT_VOTED",
+    "1": "FINISHED_WITH_RETURN",
+    "2": "FINISHED_WITH_ERROR",
+    "3": "TIMEOUT",
+    "4": "NONDET_DISAGREE",
+  };
+
+  return numeric[value] ?? value;
 }
 
 export async function getTransactionProgress(
@@ -153,12 +180,12 @@ export async function getTransactionProgress(
 
   return {
     hash,
-    status: normalizeStatus(tx?.status),
-    execution: String(
+    status: normalizeStatus(tx?.status ?? tx?.statusCode),
+    execution: normalizeExecution(
       tx?.txExecutionResultName ??
         tx?.txExecutionResult ??
         tx?.execution_result ??
-        "",
+        tx?.executionResult,
     ),
   };
 }
@@ -185,7 +212,11 @@ export async function waitForAccepted(
     const progress = await getTransactionProgress(client, hash);
     onProgress?.(progress);
 
-    if (progress.status === "ACCEPTED" || progress.status === "FINALIZED") {
+    if (
+      progress.status === "ACCEPTED" ||
+      progress.status === "READY_TO_FINALIZE" ||
+      progress.status === "FINALIZED"
+    ) {
       if (executionFailed(progress.execution ?? "")) {
         throw new Error(
           `Contract execution failed before state update: ${progress.execution}`,
@@ -194,7 +225,11 @@ export async function waitForAccepted(
       return progress;
     }
 
-    if (progress.status === "CANCELED") {
+    if (
+      progress.status === "CANCELED" ||
+      progress.status === "VALIDATORS_TIMEOUT" ||
+      progress.status === "LEADER_TIMEOUT"
+    ) {
       throw new Error(
         "GenLayer canceled this transaction. No contract state was changed.",
       );
@@ -202,7 +237,7 @@ export async function waitForAccepted(
 
     if (progress.status === "UNDETERMINED") {
       throw new Error(
-        "GenLayer could not determine the transaction result. Check Audit mode before retrying.",
+        "GenLayer could not determine the transaction result. Do not resubmit automatically; inspect the transaction before retrying.",
       );
     }
 
@@ -233,7 +268,9 @@ export async function watchFinalized(
     if (
       progress.status === "FINALIZED" ||
       progress.status === "CANCELED" ||
-      progress.status === "UNDETERMINED"
+      progress.status === "UNDETERMINED" ||
+      progress.status === "VALIDATORS_TIMEOUT" ||
+      progress.status === "LEADER_TIMEOUT"
     ) {
       return progress;
     }
@@ -272,6 +309,8 @@ declare global {
         method: string;
         params?: unknown[];
       }) => Promise<any>;
+      on?: (event: string, listener: (...args: any[]) => void) => void;
+      removeListener?: (event: string, listener: (...args: any[]) => void) => void;
     };
   }
 }
