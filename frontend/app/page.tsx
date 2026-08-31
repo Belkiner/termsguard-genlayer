@@ -287,7 +287,7 @@ export default function Home() {
       return;
     }
 
-    const projectName =
+    let projectName =
       name.trim() ||
       (() => {
         try {
@@ -298,53 +298,41 @@ export default function Home() {
       })();
 
     try {
-      let projectId = await findProjectIdByUrl(url.trim());
+      const existing = await findProjectIdByUrl(url.trim());
 
-      if (projectId === null) {
-        const before = Number(await readContract("get_project_count"));
-        await execute(
-          "create_project",
-          [projectName, url.trim(), category],
-          "Website registered.",
-          async () => Number(await readContract("get_project_count")) > before,
+      if (existing !== null) {
+        setSelectedId(existing);
+        setNotice(
+          "This website is already protected. Use Verify again to check its current state.",
         );
-
-        // create_project is idempotent, so never assume the new project is
-        // count - 1. Resolve the actual ID from the chain.
-        projectId = await findProjectIdByUrl(url.trim());
-        if (projectId === null) {
-          throw new Error("The project was created, but its on-chain ID could not be read yet.");
-        }
+        await refresh(true);
+        return;
       }
 
-      setSelectedId(projectId);
+      const before = Number(await readContract("get_project_count"));
 
       await execute(
-        "auto_capture",
-        [projectId],
-        "Baseline captured and public commitments discovered.",
+        "protect_website",
+        [projectName, url.trim(), category],
+        "Website protected.",
         async () => {
-          const raw = await readContract("get_project", [projectId]);
-          return String(field(raw, 4, "status", "")) === "BASELINED";
+          const count = Number(await readContract("get_project_count"));
+          return count > before;
         },
       );
 
-      // The normal user flow finishes with a first real verification
-      // automatically. GenLayer still requires a separate signed transaction
-      // for the verification write, so the wallet will ask for confirmation
-      // again rather than hiding an on-chain action.
-      const beforeVerifications = Number(await readContract("get_verification_count"));
-      await execute(
-        "verify_project",
-        [projectId],
-        "Initial verification completed.",
-        async () => Number(await readContract("get_verification_count")) > beforeVerifications,
-      );
+      const projectId = await findProjectIdByUrl(url.trim());
+      if (projectId === null) {
+        throw new Error(
+          "The transaction was accepted, but the new project is not readable yet. Wait for finality and refresh.",
+        );
+      }
 
+      setSelectedId(projectId);
       setMode("simple");
       await refresh(true);
       setNotice(
-        "Monitoring is active. The baseline and first live verification are recorded on GenLayer.",
+        "Website protected. Baseline and public commitments were captured in the same transaction. Run Verify again later for a real current-state check.",
       );
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Automatic setup failed.");
@@ -493,7 +481,7 @@ export default function Home() {
               <div className="card intro-card">
                 <span className="label">START MONITORING</span>
                 <h2>One website. One click to start monitoring.</h2>
-                <p>TermsGuard captures the public baseline and runs the first live verification for you. You only approve the on-chain transactions.</p>
+                <p>TermsGuard captures the public baseline and discovers public commitments in one on-chain transaction. Later verification checks the live page against that baseline.</p>
                 <div className="url-row">
                   <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://your-project.com" />
                   <button className="button primary large" disabled={busy || !live} onClick={() => void protectWebsite()}>

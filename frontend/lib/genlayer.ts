@@ -119,12 +119,23 @@ function normalizeStatus(raw: unknown): TxStage {
       ? String(raw)
       : String(raw ?? "UNKNOWN").toUpperCase();
 
-  // Current GenLayer transaction status codes.
-  // 0 UNINITIALIZED, 1 PENDING, 2 PROPOSING, 3 COMMITTING,
-  // 4 REVEALING, 5 ACCEPTED, 6 UNDETERMINED, 7 FINALIZED,
-  // 8 CANCELED, 9 APPEAL_REVEALING, 10 APPEAL_COMMITTING,
-  // 11 READY_TO_FINALIZE, 12 VALIDATORS_TIMEOUT, 13 LEADER_TIMEOUT,
-  // 14 LEADER_REVEALING.
+  // GenLayer transaction lifecycle:
+  // 0 UNINITIALIZED
+  // 1 PENDING
+  // 2 PROPOSING
+  // 3 COMMITTING
+  // 4 REVEALING
+  // 5 ACCEPTED
+  // 6 UNDETERMINED
+  // 7 FINALIZED
+  // 8 CANCELED
+  // 9 APPEAL_REVEALING
+  // 10 APPEAL_COMMITTING
+  // 11 READY_TO_FINALIZE
+  // 12 VALIDATORS_TIMEOUT
+  // 13 LEADER_TIMEOUT
+  // 14 LEADER_REVEALING
+
   const numeric: Record<string, TxStage> = {
     "0": "UNINITIALIZED",
     "1": "PENDING",
@@ -145,10 +156,21 @@ function normalizeStatus(raw: unknown): TxStage {
 
   return numeric[value] ?? (
     [
-      "UNINITIALIZED", "PENDING", "PROPOSING", "COMMITTING",
-      "REVEALING", "LEADER_REVEALING", "ACCEPTED", "UNDETERMINED",
-      "FINALIZED", "CANCELED", "APPEAL_REVEALING", "APPEAL_COMMITTING",
-      "READY_TO_FINALIZE", "VALIDATORS_TIMEOUT", "LEADER_TIMEOUT",
+      "UNINITIALIZED",
+      "PENDING",
+      "PROPOSING",
+      "COMMITTING",
+      "REVEALING",
+      "LEADER_REVEALING",
+      "ACCEPTED",
+      "UNDETERMINED",
+      "FINALIZED",
+      "CANCELED",
+      "APPEAL_REVEALING",
+      "APPEAL_COMMITTING",
+      "READY_TO_FINALIZE",
+      "VALIDATORS_TIMEOUT",
+      "LEADER_TIMEOUT",
     ].includes(value)
       ? (value as TxStage)
       : "UNKNOWN"

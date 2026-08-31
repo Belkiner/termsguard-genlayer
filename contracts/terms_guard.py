@@ -123,13 +123,50 @@ class TermsGuard(gl.Contract):
         )
         return u32(len(self.projects) - 1)
 
-    # ---------------- AUTOMATIC BASELINE + DISCOVERY ----------------
+    # ---------------- ONE-TRANSACTION SETUP ----------------
 
     @gl.public.write
-    def auto_capture(self, project_id: u32) -> str:
-        if project_id >= len(self.projects):
-            raise gl.vm.UserError("Project not found")
+    def protect_website(self, name: str, url: str, category: str) -> u32:
+        """
+        One user-confirmed transaction for first-time setup.
 
+        It creates the monitoring record and, in the same transaction,
+        fetches the public page through GenLayer consensus, extracts facts,
+        and discovers public commitments. A later verify_project call is
+        intentionally separate because a meaningful verification needs a
+        later/current page to compare against the captured baseline.
+        """
+        name = name.strip()
+        url = url.strip()
+
+        if not name:
+            raise gl.vm.UserError("Project name is required")
+        if not (url.startswith("https://") or url.startswith("http://")):
+            raise gl.vm.UserError("URL must start with http:// or https://")
+
+        normalized_url = url.rstrip("/")
+
+        for i in range(len(self.projects)):
+            if self.projects[i].url.rstrip("/") == normalized_url:
+                return u32(i)
+
+        self.projects.append(
+            Project(
+                name=name[:80],
+                url=normalized_url[:300],
+                category=category[:40],
+                baseline="",
+                status="PENDING",
+                score=u8(0),
+                summary="Capturing the public baseline with GenLayer consensus.",
+            )
+        )
+
+        project_id = u32(len(self.projects) - 1)
+        self._capture_for_project(project_id)
+        return project_id
+
+    def _capture_for_project(self, project_id: u32):
         url = self.projects[project_id].url
 
         def inspect():
@@ -164,11 +201,10 @@ commitments. Maximum 12 commitments and 20 facts.
 If the page has no clear commitment, return an empty commitments array.
 """
 
-            raw = gl.nondet.exec_prompt(
+            return gl.nondet.exec_prompt(
                 prompt + "\nSOURCE URL:\n" + url + "\nCURRENT PAGE TEXT:\n" + page,
                 response_format="json",
             )
-            return raw
 
         raw_result = gl.eq_principle.prompt_comparative(
             inspect,
@@ -180,13 +216,13 @@ If the page has no clear commitment, return an empty commitments array.
             ),
         )
 
-        try:
-            if isinstance(raw_result, dict):
-                data = raw_result
-            else:
+        if isinstance(raw_result, dict):
+            data = raw_result
+        else:
+            try:
                 data = json.loads(str(raw_result))
-        except Exception:
-            raise gl.vm.UserError("Consensus could not produce valid audit JSON")
+            except Exception:
+                raise gl.vm.UserError("Consensus could not produce valid audit JSON")
 
         if not isinstance(data, dict):
             raise gl.vm.UserError("Consensus returned invalid audit data")
@@ -212,7 +248,6 @@ If the page has no clear commitment, return an empty commitments array.
             if item.project_id == project_id:
                 existing.add(item.statement.strip().lower())
 
-        added = 0
         for item in commitments[:12]:
             if not isinstance(item, dict):
                 continue
@@ -234,28 +269,27 @@ If the page has no clear commitment, return an empty commitments array.
                 )
             )
             existing.add(key)
-            added += 1
 
-        baseline = json.dumps(
+        self.projects[project_id].baseline = json.dumps(
             {"facts": clean_facts},
             sort_keys=True,
-        )
-
-        self.projects[project_id].baseline = baseline[:10000]
+        )[:10000]
         self.projects[project_id].status = "BASELINED"
-        # A captured baseline is not a health score. The score becomes meaningful
-        # only after a verification result is available.
         self.projects[project_id].score = u8(0)
         self.projects[project_id].summary = (
             "Baseline captured and public commitments discovered with GenLayer consensus."
         )
 
+    # ---------------- AUTOMATIC BASELINE + DISCOVERY ----------------
+
+    @gl.public.write
+    def auto_capture(self, project_id: u32) -> str:
+        if project_id >= len(self.projects):
+            raise gl.vm.UserError("Project not found")
+
+        self._capture_for_project(project_id)
         return json.dumps(
-            {
-                "status": "BASELINED",
-                "facts": len(clean_facts),
-                "commitments_added": added,
-            },
+            {"status": "BASELINED"},
             sort_keys=True,
         )
 
