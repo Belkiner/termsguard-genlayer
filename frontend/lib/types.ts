@@ -53,5 +53,8 @@ export type TxStage =
 export type TxProgress = {
   hash: string;
   status: TxStage;
-  execution?: string;
+  execution: string;
+  resultName: string;
+  receiptStatus: string;
+  success: boolean;
 };
