@@ -193,10 +193,18 @@ export async function getTransactionProgress(
 ): Promise<TxProgress> {
   const tx = await client.getTransaction({ hash });
 
-  const resultName = String(
+  // GenLayer exposes two different result concepts:
+  // - result_name / consensus_result_name = consensus outcome (e.g. MAJORITY_AGREE)
+  // - txExecutionResultName / txExecutionResult = GenVM execution outcome
+  //
+  // MAJORITY_AGREE is NOT a contract execution result. Never use the
+  // consensus result as a fallback for execution, otherwise a perfectly
+  // accepted transaction is incorrectly reported as a contract failure.
+  const consensusResult = String(
     tx?.result_name ??
-      tx?.txExecutionResultName ??
-      tx?.execution_result_name ??
+      tx?.resultName ??
+      tx?.consensus_result_name ??
+      tx?.consensusResultName ??
       "",
   ).toUpperCase();
 
@@ -207,26 +215,33 @@ export async function getTransactionProgress(
       "",
   ).toLowerCase();
 
-  const execution = normalizeExecution(
+  const executionRaw =
     tx?.txExecutionResultName ??
-      tx?.txExecutionResult ??
-      tx?.execution_result ??
-      tx?.executionResult ??
-      resultName,
+    tx?.txExecutionResult ??
+    tx?.execution_result_name ??
+    tx?.execution_result ??
+    tx?.executionResult ??
+    tx?.leader_receipt?.tx_execution_result_name ??
+    tx?.leaderReceipt?.txExecutionResultName;
+
+  // If the execution field is not present yet, keep it NOT_VOTED and let
+  // the lifecycle poll continue. Do not infer failure from consensus data.
+  const execution = normalizeExecution(
+    executionRaw === undefined || executionRaw === null
+      ? "NOT_VOTED"
+      : executionRaw,
   );
 
   const success =
     executionSucceeded(execution) &&
     !executionFailed(execution) &&
-    receiptStatus !== "contract_error" &&
-    resultName !== "MAJORITY_DISAGREE" &&
-    resultName !== "UNDETERMINED";
+    receiptStatus !== "contract_error";
 
   return {
     hash,
     status: normalizeStatus(tx?.status ?? tx?.statusCode),
     execution,
-    resultName,
+    resultName: consensusResult,
     receiptStatus,
     success,
   };
@@ -249,10 +264,19 @@ export async function waitForAccepted(
       progress.status === "READY_TO_FINALIZE" ||
       progress.status === "FINALIZED"
     ) {
+      // ACCEPTED can be observed before the execution result projection is
+      // available through the SDK. In that case keep polling instead of
+      // treating the consensus result (e.g. MAJORITY_AGREE) as an error.
+      if (progress.execution === "NOT_VOTED") {
+        await new Promise((resolve) => setTimeout(resolve, 3000));
+        continue;
+      }
+
       if (!progress.success) {
         throw new Error(
-          `Transaction reached ${progress.status}, but contract execution did not succeed. ` +
-            `Result: ${progress.resultName || progress.execution}. Hash: ${hash}`,
+          `Transaction reached ${progress.status}, but GenVM execution failed. ` +
+            `Execution: ${progress.execution}. ` +
+            `Consensus: ${progress.resultName || "unknown"}. Hash: ${hash}`,
         );
       }
       return progress;
