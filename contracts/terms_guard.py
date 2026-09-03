@@ -61,9 +61,9 @@ class TermsGuard(gl.Contract):
     verifications: DynArray[Verification]
 
     def __init__(self):
-        self.projects = DynArray()
-        self.commitments = DynArray()
-        self.verifications = DynArray()
+        # Persistent DynArray storage is initialized by GenLayer.
+        # Do not instantiate DynArray() manually in the constructor.
+        pass
 
     # ---------------- READ ----------------
 
