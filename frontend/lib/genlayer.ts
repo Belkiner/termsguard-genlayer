@@ -263,16 +263,25 @@ export async function waitForAccepted(
       progress.status === "READY_TO_FINALIZE" ||
       progress.status === "FINALIZED"
     ) {
-      // ACCEPTED + MAJORITY_AGREE is not an execution error. Keep polling
-      // until GenVM reports FINISHED_WITH_RETURN or FINISHED_WITH_ERROR.
+      // MAJORITY_AGREE is a consensus result, not an execution error.
+      // Some GenLayerJS/node combinations do not expose the execution field
+      // on the transaction object even after FINALIZED. For state-changing
+      // calls the caller also verifies the expected on-chain state below, so
+      // an accepted/finalized transaction without an explicit failure can
+      // safely move forward instead of getting stuck forever.
       if (progress.success) return progress;
 
-      if (executionFailed(progress.execution)) {
+      if (executionFailed(progress.execution) || progress.receiptStatus === "contract_error") {
         throw new Error(
           `Contract execution failed at ${progress.status}. ` +
             `Execution: ${progress.execution}. ` +
             `Consensus: ${progress.resultName || "UNKNOWN"}. Hash: ${hash}`,
         );
+      }
+
+      if (progress.status === "FINALIZED") return progress;
+      if (progress.status === "ACCEPTED" && progress.resultName === "MAJORITY_AGREE") {
+        return progress;
       }
     }
 
