@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   isConfigured,
+  executionFailed,
   networkName,
   readContract,
   waitForAccepted,
@@ -65,6 +66,13 @@ function toVerification(raw: any, id: number): Verification {
   };
 }
 
+function hasUsableBaseline(project: Project) {
+  try {
+    const baseline = JSON.parse(project.baseline);
+    return baseline.source_status === "OK" && Array.isArray(baseline.facts) && baseline.facts.length > 0;
+  } catch { return false; }
+}
+
 function badge(status: string) {
   const value = status.toUpperCase();
   if (["FULFILLED", "NO_CHANGE", "BASELINED"].includes(value)) return "good";
@@ -121,19 +129,19 @@ function TxPanel({ tx }: { tx: TxProgress | null }) {
     tx.execution.includes("REVERT") ||
     tx.execution.includes("TIMEOUT") ||
     tx.execution.includes("NONDET_DISAGREE") ||
+    executionFailed(tx.execution) ||
     ["CANCELED", "UNDETERMINED", "VALIDATORS_TIMEOUT", "LEADER_TIMEOUT"].includes(tx.status);
-  const completed =
-    tx.status === "FINALIZED" && !explicitFailure &&
-    (tx.success || tx.resultName === "MAJORITY_AGREE" || !tx.resultName);
+  const completed = tx.status === "FINALIZED" && tx.success && !explicitFailure;
 
-  const failed = explicitFailure && tx.status !== "ACCEPTED";
-  const title = completed
+  const failed = explicitFailure || executionFailed(tx.execution);
+  const unknownFinal = tx.status === "FINALIZED" && !completed && !failed;
+  const title = unknownFinal ? "Finalized — execution unconfirmed" : completed
     ? "Transaction complete"
     : failed
       ? "Transaction needs attention"
       : "Transaction in progress";
 
-  const subtitle = completed
+  const subtitle = unknownFinal ? "Check the execution receipt before retrying." : completed
     ? "Consensus reached and the contract state has been accepted by the network."
     : failed
       ? "The transaction did not finish successfully."
@@ -154,11 +162,11 @@ function TxPanel({ tx }: { tx: TxProgress | null }) {
         {!completed && !failed && <div className="tx-spinner" aria-label="transaction in progress" />}
       </div>
 
-      <div className="tx-progress-row">
+      <div className="tx-progress-row" aria-label="Transaction lifecycle stages, not elapsed-time percentage">
         <div className="tx-track">
           <div className="tx-fill" style={{ width: `${pct}%` }} />
         </div>
-        <strong>{Math.round(pct)}%</strong>
+        <strong>{tx.status}</strong>
       </div>
 
       <div className="tx-steps">
@@ -193,7 +201,8 @@ function TxPanel({ tx }: { tx: TxProgress | null }) {
 
       <div className="tx-hash">
         <span>TX</span>
-        <code>{tx.hash.slice(0, 12)}…{tx.hash.slice(-10)}</code>
+        <code title={tx.hash}>{tx.hash}</code>
+        <button type="button" onClick={() => void navigator.clipboard.writeText(tx.hash)}>Copy TX</button>
       </div>
     </section>
   );
@@ -217,6 +226,17 @@ export default function Home() {
   const [notice, setNotice] = useState("");
   const [tx, setTx] = useState<TxProgress | null>(null);
   const refreshInFlight = useRef(false);
+  const operationLock = useRef(false);
+  const activeHash = useRef("");
+
+  async function runAction(action: () => Promise<void>) {
+    if (operationLock.current) return;
+    operationLock.current = true;
+    setBusy(true);
+    try { await action(); }
+    catch (error) { setNotice(error instanceof Error ? error.message : "Operation failed."); }
+    finally { operationLock.current = false; setBusy(false); }
+  }
 
   const live = isConfigured();
   const selected = projects.find((p) => p.id === selectedId) ?? projects[0];
@@ -230,21 +250,35 @@ export default function Home() {
       monitored: projects.length,
       commitments: items.length,
       fulfilled: items.filter((c) => c.status === "FULFILLED").length,
-      alerts: items.filter((c) => ["BROKEN", "UNVERIFIABLE"].includes(c.status)).length,
+      alerts: items.filter((c) => ["BROKEN", "UNVERIFIABLE"].includes(c.status)).length +
+        (selected && ["HIGH", "CRITICAL", "UNVERIFIABLE"].includes(selected.status) ? 1 : 0),
       score: selected?.score ?? 0,
     };
   }, [projects, commitments, selected]);
 
   useEffect(() => {
+    const provider = window.ethereum;
+    const accountChanged = (accounts: string[]) => setWallet(accounts?.[0] ?? "");
+    const chainChanged = () => { setNotice("Wallet network changed. It will be checked before the next write."); };
+    void provider?.request({method:"eth_accounts"}).then(accountChanged).catch(() => {});
+    provider?.on?.("accountsChanged", accountChanged);
+    provider?.on?.("chainChanged", chainChanged);
+    return () => { provider?.removeListener?.("accountsChanged", accountChanged); provider?.removeListener?.("chainChanged", chainChanged); };
+  }, []);
+
+  useEffect(() => {
     if (live) void refresh(true);
   }, [live]);
 
-  async function refresh(silent = false) {
+  async function refresh(silent = false): Promise<boolean> {
     if (!live) {
       if (!silent) setNotice("Contract is not configured.");
-      return;
+      return false;
     }
-    if (refreshInFlight.current) return;
+    if (refreshInFlight.current) {
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      return refresh(silent);
+    }
 
     refreshInFlight.current = true;
     setLoading(true);
@@ -297,8 +331,10 @@ export default function Home() {
       }
 
       if (!silent) setNotice("Live state synchronized from GenLayer.");
+      return true;
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Could not read contract state.");
+      return false;
     } finally {
       refreshInFlight.current = false;
       setLoading(false);
@@ -341,10 +377,9 @@ export default function Home() {
     args: any[],
     stateCheck?: () => Promise<boolean>,
   ) {
-    setBusy(true);
-
     try {
       const { hash, client } = await writeContract(functionName, args);
+      activeHash.current = hash;
       setTx({
         hash,
         status: "PENDING",
@@ -367,22 +402,30 @@ export default function Home() {
 
       await refresh(true);
 
-      void watchFinalized(client, hash, setTx)
-        .then((final) => {
-          setTx(final);
-
-          if (final.status === "FINALIZED" && !final.receiptStatus.includes("contract_error")) {
-            void refresh(true);
-            setNotice("Transaction finalized. Contract state is up to date.");
-            window.setTimeout(() => setTx(null), 3000);
-          } else if (
-            ["CANCELED", "UNDETERMINED", "VALIDATORS_TIMEOUT", "LEADER_TIMEOUT"].includes(final.status)
-          ) {
+      const updateOwnTx = (progress: TxProgress) => {
+        setTx((current) => current?.hash === hash ? progress : current);
+      };
+      void watchFinalized(client, hash, updateOwnTx)
+        .then(async (final) => {
+          updateOwnTx(final);
+          if (activeHash.current !== hash) return;
+          if (final.status === "FINALIZED") {
+            if (final.success && !executionFailed(final.execution) && final.receiptStatus !== "contract_error") {
+              const synced = await refresh(true);
+              if (activeHash.current === hash) setNotice(synced
+                ? "Transaction finalized. State synchronized."
+                : "Transaction finalized; state refresh failed. Use Refresh.");
+            } else {
+              setNotice("Transaction finalized without confirmed successful execution. Inspect TX before retrying.");
+            }
+          } else if (["CANCELED", "UNDETERMINED", "VALIDATORS_TIMEOUT", "LEADER_TIMEOUT"].includes(final.status)) {
             setNotice(`Transaction ended with ${final.status}.`);
+          } else {
+            setNotice("Finality monitoring paused. Keep the TX hash and resume checking; do not resubmit automatically.");
           }
         })
         .catch((error) => {
-          setNotice(error instanceof Error ? error.message : "Transaction monitoring failed.");
+          if (activeHash.current === hash) setNotice(error instanceof Error ? error.message : "Transaction monitoring failed.");
         });
 
       return accepted;
@@ -403,13 +446,19 @@ export default function Home() {
           : null,
       );
       throw error;
-    } finally {
-      setBusy(false);
     }
   }
 
   async function protectWebsite() {
     const target = url.trim();
+    try {
+      const parsed = new URL(target);
+      if (!["http:", "https:"].includes(parsed.protocol) || !parsed.hostname || parsed.username || parsed.password || target.length > 300) throw new Error();
+    } catch {
+      setNotice("Enter a valid public HTTP(S) URL, without credentials, up to 300 characters.");
+      return;
+    }
+    if (!window.ethereum) { setNotice("Connect a compatible browser wallet to continue."); return; }
 
     if (!target) {
       setNotice("Paste the public website URL first.");
@@ -430,7 +479,12 @@ export default function Home() {
 
       if (existing !== null) {
         setSelectedId(existing);
-        setNotice("This website is already protected. Running verification now.");
+        const existingProject = toProject(await readContract("get_project", [existing]), existing);
+        if (!hasUsableBaseline(existingProject)) {
+          setNotice("This project needs baseline capture before verification. Use Capture baseline.");
+          return;
+        }
+        setNotice("Existing baseline found. Running verification now.");
         await verifyProjectById(existing);
         return;
       }
@@ -450,6 +504,8 @@ export default function Home() {
       setSelectedId(projectId);
       await refresh(true);
 
+      const captured = toProject(await readContract("get_project", [projectId]), projectId);
+      if (!hasUsableBaseline(captured)) throw new Error("Capture returned an unusable baseline. Inspect source and retry capture.");
       // Automatically run the actual verification after baseline creation.
       await verifyProjectById(projectId);
     } catch (error) {
@@ -459,17 +515,30 @@ export default function Home() {
 
   async function verifyProjectById(projectId: number) {
     try {
+      const project = toProject(await readContract("get_project", [projectId]), projectId);
+      if (!hasUsableBaseline(project)) throw new Error("Capture a usable baseline before verification.");
       const before = Number(await readContract("get_verification_count"));
 
       await execute("verify_project", [projectId], async () => {
-        return Number(await readContract("get_verification_count")) > before;
+        const count = Number(await readContract("get_verification_count"));
+        for (let id = before; id < count; id++) {
+          const row = toVerification(await readContract("get_verification", [id]), id);
+          if (row.projectId === projectId && row.kind === "POLICY") return true;
+        }
+        return false;
       });
 
       await refresh(true);
-      setNotice("Verification completed. Results are now stored on-chain.");
+      setNotice("Verification accepted. Up to six commitments were checked; finality is monitored separately.");
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Verification failed.");
     }
+  }
+
+  async function captureSelected() {
+    if (!selected) return;
+    await execute("auto_capture", [selected.id], async () => hasUsableBaseline(toProject(await readContract("get_project", [selected.id]), selected.id)));
+    await refresh(true);
   }
 
   async function verifySelected() {
@@ -538,8 +607,11 @@ export default function Home() {
           </div>
 
           <div className="protect-card">
-            <label>Website URL</label>
+            <label htmlFor="website-url">Website URL</label>
             <input
+              id="website-url"
+              type="url"
+              maxLength={300}
               value={url}
               onChange={(e) => setUrl(e.target.value)}
               placeholder="https://project.com"
@@ -547,12 +619,14 @@ export default function Home() {
             />
             <div className="protect-row">
               <input
+                aria-label="Project name"
+                maxLength={80}
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 placeholder="Project name (optional)"
                 disabled={busy}
               />
-              <select value={category} onChange={(e) => setCategory(e.target.value)} disabled={busy}>
+              <select aria-label="Page category" value={category} onChange={(e) => setCategory(e.target.value)} disabled={busy}>
                 <option>Terms</option>
                 <option>Roadmap</option>
                 <option>Docs</option>
@@ -561,23 +635,24 @@ export default function Home() {
                 <option>Other</option>
               </select>
             </div>
-            <button className="button primary" onClick={protectWebsite} disabled={busy || !live}>
+            <button className="button primary" onClick={() => void runAction(protectWebsite)} disabled={busy || !live}>
               {busy ? "Working…" : "Protect website"}
             </button>
             <small>Baseline, discovery and verification are handled automatically. GenLayer may request more than one wallet confirmation because each state-changing transaction is signed separately.</small>
           </div>
         </section>
 
+        {busy && <p role="status">Processing your request. Check your wallet if a signature is requested.</p>}
         <TxPanel tx={tx} />
 
-        {notice && <div className="notice">{notice}</div>}
+        {notice && <div className="notice" role="status">{notice}</div>}
 
         <section className="stats-grid">
           <div><span>Monitored</span><b>{stats.monitored}</b></div>
           <div><span>Commitments</span><b>{stats.commitments}</b></div>
           <div><span>Fulfilled</span><b>{stats.fulfilled}</b></div>
           <div><span>Alerts</span><b>{stats.alerts}</b></div>
-          <div><span>Trust score</span><b>{selected?.score ? `${selected.score}/100` : "—"}</b></div>
+          <div><span>Policy score (model estimate)</span><b>{selected && !["PENDING", "CAPTURING", "BASELINED"].includes(selected.status) ? `${selected.score}/100` : "—"}</b></div>
         </section>
 
         <section className="content-grid">
@@ -620,15 +695,17 @@ export default function Home() {
                 <p className="eyebrow">VERIFICATION</p>
                 <h2>{selected ? selected.name : "No project selected"}</h2>
               </div>
-              <button className="button primary" onClick={verifySelected} disabled={!selected || busy}>
+              <button className="button primary" onClick={() => void runAction(verifySelected)} disabled={!selected || busy || !hasUsableBaseline(selected)}>
                 Verify again
               </button>
             </div>
 
             {selected ? (
               <>
+                {!hasUsableBaseline(selected) && <button className="button ghost" disabled={busy} onClick={() => void runAction(captureSelected)}>Capture baseline</button>}
+                <details><summary>Inspect baseline</summary><pre style={{whiteSpace:"pre-wrap",overflowWrap:"anywhere"}}>{selected.baseline || "No baseline captured."}</pre></details>
                 <div className="score">
-                  <div className="score-number">{selected.score || "—"}</div>
+                  <div className="score-number">{["PENDING", "CAPTURING", "BASELINED"].includes(selected.status) ? "—" : selected.score}</div>
                   <div>
                     <b>{selected.status}</b>
                     <p>{selected.summary || "Waiting for verification."}</p>
@@ -673,11 +750,11 @@ export default function Home() {
             <div className="empty">No verification records yet.</div>
           ) : (
             <div className="history-list">
-              {history.slice(0, 12).map((item) => (
+              {history.filter((item) => !selected || item.projectId === selected.id).slice(0, 12).map((item) => (
                 <div className="history-row" key={item.id}>
                   <span className={`status ${badge(item.status)}`}>{item.status}</span>
                   <span>{item.kind}</span>
-                  <span className="history-summary">{item.summary}</span>
+                  <span className="history-summary">{item.summary}<details><summary>Evidence — project #{item.projectId}</summary>{item.evidence || "No evidence stored."}</details></span>
                   <span>{item.score}/100</span>
                 </div>
               ))}
@@ -693,14 +770,18 @@ export default function Home() {
             </div>
           </div>
 
-          <form className="manual-form" onSubmit={addManualCommitment}>
+          <form className="manual-form" onSubmit={(e) => { e.preventDefault(); void runAction(() => addManualCommitment(e)); }}>
             <input
+              aria-label="Commitment statement"
+              maxLength={600}
               value={statement}
               onChange={(e) => setStatement(e.target.value)}
               placeholder="Optional commitment statement"
               disabled={!selected || busy}
             />
             <input
+              aria-label="Commitment deadline"
+              type="date"
               value={deadline}
               onChange={(e) => setDeadline(e.target.value)}
               placeholder="Deadline YYYY-MM-DD"
@@ -721,10 +802,11 @@ export default function Home() {
         .hero-copy { max-width:650px; font-size:17px; line-height:1.65; opacity:.72; }
         .protect-card,.panel,.tx-panel,.notice { border:1px solid rgba(255,255,255,.1); background:rgba(255,255,255,.035); border-radius:22px; padding:22px; box-shadow:0 18px 60px rgba(0,0,0,.16); }
         .protect-card label { display:block; font-size:12px; opacity:.7; margin-bottom:8px; }
-        input,select { width:100%; box-sizing:border-box; border:1px solid rgba(255,255,255,.12); background:rgba(0,0,0,.18); color:inherit; border-radius:12px; padding:13px 14px; outline:none; }
+        input,select { width:100%; box-sizing:border-box; border:1px solid rgba(255,255,255,.12); background:#fff; color:var(--ink); border-radius:12px; padding:13px 14px; outline:none; }
         .protect-row,.manual-form { display:grid; grid-template-columns:1fr 170px; gap:10px; margin-top:10px; }
         .button { border:1px solid rgba(255,255,255,.12); border-radius:12px; padding:12px 15px; cursor:pointer; font-weight:650; background:transparent; color:inherit; }
-        .button.primary { width:100%; margin-top:12px; background:rgba(255,255,255,.12); }
+        .button.primary { margin-top:0; background:var(--ink); color:#fff; }
+        .protect-card .button.primary { width:100%; margin-top:12px; }
         .button.ghost { background:rgba(255,255,255,.04); }
         .button:disabled { opacity:.45; cursor:not-allowed; }
         .protect-card small { display:block; margin-top:10px; font-size:11px; opacity:.55; line-height:1.5; }
@@ -756,7 +838,7 @@ export default function Home() {
         .tx-hash { display:flex; justify-content:space-between; gap:10px; margin-top:9px; padding-top:10px; border-top:1px solid rgba(255,255,255,.07); font-size:10px; opacity:.52; }
         .tx-hash code { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
         .tx-detail { margin-top:12px; padding:10px 12px; border-radius:10px; background:rgba(255,123,134,.07); font-size:12px; opacity:.82; }
-        .notice { margin-bottom:16px; font-size:13px; line-height:1.5; }
+        .notice { margin-bottom:16px; font-size:13px; line-height:1.5; background:#151515; color:#fff; max-width:min(520px,calc(100vw - 44px)); }
         .stats-grid { display:grid; grid-template-columns:repeat(5,1fr); gap:10px; margin-bottom:16px; }
         .stats-grid > div { padding:18px; border:1px solid rgba(255,255,255,.08); border-radius:16px; background:rgba(255,255,255,.025); }
         .stats-grid span { display:block; font-size:11px; opacity:.55; }
@@ -766,16 +848,17 @@ export default function Home() {
         .panel-head { display:flex; justify-content:space-between; gap:18px; align-items:center; margin-bottom:18px; }
         .panel-head h2 { margin:0; font-size:22px; letter-spacing:-.02em; }
         .project-list { display:grid; gap:7px; }
-        .project-row { width:100%; display:grid; grid-template-columns:10px 1fr auto; gap:12px; align-items:center; text-align:left; color:inherit; background:transparent; border:1px solid transparent; border-radius:14px; padding:13px; cursor:pointer; }
+        .project-row { width:100%; display:grid; grid-template-columns:10px minmax(0,1fr) auto; gap:12px; align-items:center; text-align:left; color:inherit; background:transparent; border:1px solid transparent; border-radius:14px; padding:13px; cursor:pointer; }
         .project-row:hover,.project-row.selected { background:rgba(255,255,255,.045); border-color:rgba(255,255,255,.08); }
         .project-dot { width:8px; height:8px; border-radius:50%; background:currentColor; }
+        .project-main { min-width:0; }
         .project-main b,.project-main small { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
         .project-main small { margin-top:4px; opacity:.5; font-size:11px; }
         .status { font-size:10px; letter-spacing:.08em; padding:5px 8px; border-radius:999px; border:1px solid currentColor; opacity:.9; }
-        .status.good { color:#79e2a7; }
-        .status.warn { color:#e8c66a; }
-        .status.bad { color:#ff7b86; }
-        .status.muted { opacity:.5; }
+        .status.good { color:#17613e; background:#e8f6ef; opacity:1; }
+        .status.warn { color:#765000; background:#fff6df; opacity:1; }
+        .status.bad { color:#a12424; background:#fdecec; opacity:1; }
+        .status.muted { color:#555; opacity:1; }
         .score { display:flex; gap:18px; align-items:center; padding:18px; border-radius:16px; background:rgba(255,255,255,.035); }
         .score-number { font-size:46px; line-height:1; font-weight:750; letter-spacing:-.06em; }
         .score p { margin:6px 0 0; opacity:.62; font-size:12px; line-height:1.5; }
@@ -788,9 +871,11 @@ export default function Home() {
         .history-panel,.advanced { margin-top:16px; }
         .history-list { display:grid; gap:4px; }
         .history-row { display:grid; grid-template-columns:120px 120px 1fr 80px; gap:12px; align-items:center; padding:12px 0; border-top:1px solid rgba(255,255,255,.07); font-size:12px; }
-        .history-summary { opacity:.62; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+        .history-summary { color:var(--muted); white-space:normal; overflow-wrap:anywhere; }
         .empty { padding:28px 10px; text-align:center; opacity:.5; font-size:13px; }
         .manual-form { grid-template-columns:1fr 170px 100px; margin:0; }
+        @media (prefers-reduced-motion:reduce) { .tx-status-icon.working:after,.tx-spinner { animation:none; } }
+        @media (max-width:620px) { .topbar {height:auto; min-height:76px; flex-wrap:wrap; gap:12px; padding:12px;} .top-actions {flex-wrap:wrap;} .panel-head {flex-wrap:wrap;} }
         @keyframes spin { to { transform:rotate(360deg); } }
         @media (max-width:850px) {
           .hero,.content-grid { grid-template-columns:1fr; }

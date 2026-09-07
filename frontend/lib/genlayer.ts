@@ -106,11 +106,15 @@ export async function writeContract(
   return { hash: String(hash), client };
 }
 
+function normalizeName(raw: unknown): string {
+  return String(raw ?? "").trim().replace(/([a-z0-9])([A-Z])/g, "$1_$2").replace(/[\s-]+/g, "_").toUpperCase();
+}
+
 function normalizeStatus(raw: unknown): TxStage {
   const value =
     typeof raw === "number" || typeof raw === "bigint"
       ? String(raw)
-      : String(raw ?? "UNKNOWN").toUpperCase();
+      : normalizeName(raw) || "UNKNOWN";
 
   const numeric: Record<string, TxStage> = {
     "0": "UNINITIALIZED",
@@ -154,17 +158,18 @@ function normalizeStatus(raw: unknown): TxStage {
 }
 
 function normalizeExecution(raw: unknown): string {
-  if (typeof raw === "number" || typeof raw === "bigint") {
+  if (typeof raw === "number" || typeof raw === "bigint" || /^\d+$/.test(String(raw))) {
     const numeric: Record<string, string> = {
       "0": "NOT_VOTED",
       "1": "FINISHED_WITH_RETURN",
       "2": "FINISHED_WITH_ERROR",
       "3": "TIMEOUT",
       "4": "NONDET_DISAGREE",
+      "5": "DETERMINISTIC_VIOLATION",
     };
     return numeric[String(raw)] ?? String(raw);
   }
-  return String(raw ?? "UNKNOWN").toUpperCase();
+  return normalizeName(raw) || "UNKNOWN";
 }
 
 function executionSucceeded(execution: string) {
@@ -176,14 +181,18 @@ function executionSucceeded(execution: string) {
   );
 }
 
-function executionFailed(execution: string) {
+export function executionFailed(execution: string) {
   const value = execution.toUpperCase();
   return (
     value.includes("FINISHED_WITH_ERROR") ||
     value.includes("ERROR") ||
     value.includes("FAILED") ||
     value.includes("REVERT") ||
-    value.includes("NONDET_DISAGREE")
+    value.includes("NONDET_DISAGREE") ||
+    value.includes("NONDETDISAGREE") ||
+    value.includes("TIMEOUT") ||
+    value.includes("DETERMINISTIC_VIOLATION") ||
+    value.includes("DETERMINISTICVIOLATION")
   );
 }
 
@@ -197,12 +206,12 @@ export async function getTransactionProgress(
   // - result_name / txResultName: consensus result (e.g. MAJORITY_AGREE)
   // - txExecutionResultName: GenVM execution result (e.g. FINISHED_WITH_RETURN)
   // Never use the consensus result as a fallback for execution.
-  const resultName = String(
+  const resultName = normalizeName(
     tx?.result_name ??
       tx?.txResultName ??
       tx?.resultName ??
       "",
-  ).toUpperCase();
+  );
 
   const receiptStatus = String(
     tx?.leader_receipt?.status ??
@@ -238,7 +247,7 @@ export async function getTransactionProgress(
 
   return {
     hash,
-    status: normalizeStatus(tx?.status ?? tx?.statusCode),
+    status: normalizeStatus(tx?.statusName ?? tx?.status_name ?? tx?.status ?? tx?.statusCode),
     execution,
     resultName,
     receiptStatus,
@@ -263,25 +272,15 @@ export async function waitForAccepted(
       progress.status === "READY_TO_FINALIZE" ||
       progress.status === "FINALIZED"
     ) {
-      // MAJORITY_AGREE is a consensus result, not an execution error.
-      // Some GenLayerJS/node combinations do not expose the execution field
-      // on the transaction object even after FINALIZED. For state-changing
-      // calls the caller also verifies the expected on-chain state below, so
-      // an accepted/finalized transaction without an explicit failure can
-      // safely move forward instead of getting stuck forever.
-      if (progress.success) return progress;
-
       if (executionFailed(progress.execution) || progress.receiptStatus === "contract_error") {
         throw new Error(
-          `Contract execution failed at ${progress.status}. ` +
-            `Execution: ${progress.execution}. ` +
-            `Consensus: ${progress.resultName || "UNKNOWN"}. Hash: ${hash}`,
+          `Contract execution failed at ${progress.status}. Execution: ${progress.execution}. Hash: ${hash}`,
         );
       }
-
-      if (progress.status === "FINALIZED") return progress;
-      if (progress.status === "ACCEPTED" && progress.resultName === "MAJORITY_AGREE") {
-        return progress;
+      if (progress.success) return progress;
+      // Finality without an execution result is unknown, never success.
+      if (progress.status === "FINALIZED") {
+        throw new Error(`Finalized, but successful execution could not be confirmed. Resume checking this transaction; do not resubmit. Hash: ${hash}`);
       }
     }
 
@@ -316,9 +315,11 @@ export async function watchFinalized(
   timeoutMs = 60 * 60_000,
 ) {
   const started = Date.now();
+  let last: TxProgress | null = null;
 
   while (Date.now() - started < timeoutMs) {
     const progress = await getTransactionProgress(client, hash);
+    last = progress;
     onProgress?.(progress);
 
     if (
@@ -334,7 +335,7 @@ export async function watchFinalized(
     await new Promise((resolve) => setTimeout(resolve, 5000));
   }
 
-  return {
+  return last ?? {
     hash,
     status: "UNKNOWN" as TxStage,
     execution: "UNKNOWN",
