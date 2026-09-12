@@ -115,3 +115,8 @@ The GenLayer SDK documents both `ACCEPTED` and `FINALIZED` transaction stages an
 ## Local checks
 
 Python source files are syntax-checked in this package. Full frontend build verification requires installing the locked npm dependencies because they are not vendored in the ZIP.
+
+
+## Roadmap
+
+See the [public roadmap](https://termsguard-genlayer.vercel.app/roadmap) or read [ROADMAP.md](./ROADMAP.md) for planned milestones and acceptance criteria. Planned items are not claims of functionality already delivered.
