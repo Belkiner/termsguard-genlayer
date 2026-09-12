@@ -3,6 +3,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   isConfigured,
+  contractAddress,
+  transactionReader,
   executionFailed,
   networkName,
   readContract,
@@ -151,15 +153,15 @@ function TxPanel({ tx }: { tx: TxProgress | null }) {
     <section className={`tx-panel ${completed ? "tx-complete" : ""} ${failed ? "tx-error" : ""}`} aria-live="polite">
       <div className="tx-head">
         <div className="tx-title-wrap">
-          <div className={`tx-status-icon ${completed ? "done" : failed ? "bad" : "working"}`}>
-            {completed ? "✓" : failed ? "!" : ""}
+          <div className={`tx-status-icon ${completed ? "done" : failed || unknownFinal ? "bad" : "working"}`}>
+            {completed ? "✓" : failed || unknownFinal ? "!" : ""}
           </div>
           <div>
             <b>{title}</b>
             <span>{subtitle}</span>
           </div>
         </div>
-        {!completed && !failed && <div className="tx-spinner" aria-label="transaction in progress" />}
+        {!completed && !failed && !unknownFinal && <div className="tx-spinner" aria-label="transaction in progress" />}
       </div>
 
       <div className="tx-progress-row" aria-label="Transaction lifecycle stages, not elapsed-time percentage">
@@ -203,6 +205,7 @@ function TxPanel({ tx }: { tx: TxProgress | null }) {
         <span>TX</span>
         <code title={tx.hash}>{tx.hash}</code>
         <button type="button" onClick={() => void navigator.clipboard.writeText(tx.hash)}>Copy TX</button>
+        {networkName() === "studionet" && <a href={`https://explorer-studio.genlayer.com/tx/${tx.hash}`} target="_blank" rel="noreferrer">Explorer</a>}
       </div>
     </section>
   );
@@ -224,10 +227,38 @@ export default function Home() {
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(false);
   const [notice, setNotice] = useState("");
+  const [resumeHash, setResumeHash] = useState("");
   const [tx, setTx] = useState<TxProgress | null>(null);
   const refreshInFlight = useRef(false);
   const operationLock = useRef(false);
   const activeHash = useRef("");
+  const savedTxKey = `termsguard:tx:${networkName()}:${contractAddress()}`;
+
+  useEffect(() => {
+    try { setResumeHash(localStorage.getItem(savedTxKey) ?? ""); } catch { /* Storage can be disabled. */ }
+  }, [savedTxKey]);
+
+  function rememberHash(hash: string) {
+    setResumeHash(hash);
+    try { localStorage.setItem(savedTxKey, hash); } catch { /* Monitoring still works. */ }
+  }
+
+  async function resumeTransaction() {
+    const hash = resumeHash.trim();
+    if (!/^0x[0-9a-fA-F]{64}$/.test(hash)) {
+      setNotice("Enter a valid transaction hash (0x and 64 hexadecimal characters).");
+      return;
+    }
+    activeHash.current = hash;
+    rememberHash(hash);
+    setNotice("Checking the existing transaction. No wallet signature is needed.");
+    const client = transactionReader();
+    await waitForAccepted(client, hash, setTx, 60_000);
+    const synced = await refresh(true);
+    setNotice(synced ? "Successful execution confirmed. State synchronized." : "Successful execution confirmed; refresh failed. Use Refresh.");
+    monitorFinality(client, hash);
+  }
+
 
   async function runAction(action: () => Promise<void>) {
     if (operationLock.current) return;
@@ -372,36 +403,7 @@ export default function Home() {
     }
   }
 
-  async function execute(
-    functionName: string,
-    args: any[],
-    stateCheck?: () => Promise<boolean>,
-  ) {
-    try {
-      const { hash, client } = await writeContract(functionName, args);
-      activeHash.current = hash;
-      setTx({
-        hash,
-        status: "PENDING",
-        execution: "NOT_VOTED",
-        resultName: "",
-        receiptStatus: "",
-        success: false,
-      });
-
-      const accepted = await waitForAccepted(client, hash, setTx);
-
-      if (stateCheck) {
-        const changed = await waitForState(stateCheck, (value) => value === true);
-        if (!changed) {
-          throw new Error(
-            `Transaction reached consensus but the expected contract state was not observed yet. Hash: ${hash}`,
-          );
-        }
-      }
-
-      await refresh(true);
-
+  function monitorFinality(client: any, hash: string) {
       const updateOwnTx = (progress: TxProgress) => {
         setTx((current) => current?.hash === hash ? progress : current);
       };
@@ -428,23 +430,44 @@ export default function Home() {
           if (activeHash.current === hash) setNotice(error instanceof Error ? error.message : "Transaction monitoring failed.");
         });
 
+  }
+
+  async function execute(
+    functionName: string,
+    args: any[],
+    stateCheck?: () => Promise<boolean>,
+  ) {
+    try {
+      const { hash, client } = await writeContract(functionName, args);
+      activeHash.current = hash;
+      rememberHash(hash);
+      setTx({
+        hash,
+        status: "PENDING",
+        execution: "NOT_VOTED",
+        resultName: "",
+        receiptStatus: "",
+        success: false,
+      });
+
+      const accepted = await waitForAccepted(client, hash, setTx);
+
+      if (stateCheck) {
+        const changed = await waitForState(stateCheck, (value) => value === true);
+        if (!changed) {
+          throw new Error(
+            `Transaction reached consensus but the expected contract state was not observed yet. Hash: ${hash}`,
+          );
+        }
+      }
+
+      await refresh(true);
+
+      monitorFinality(client, hash);
+
       return accepted;
     } catch (error) {
-      setTx((current) =>
-        current
-          ? {
-              ...current,
-              success: false,
-              status:
-                current.status === "PENDING" ||
-                current.status === "PROPOSING" ||
-                current.status === "COMMITTING" ||
-                current.status === "REVEALING"
-                  ? "UNKNOWN"
-                  : current.status,
-            }
-          : null,
-      );
+      // Preserve the last observed receipt when polling or state refresh fails.
       throw error;
     }
   }
@@ -644,6 +667,17 @@ export default function Home() {
 
         {busy && <p role="status">Processing your request. Check your wallet if a signature is requested.</p>}
         <TxPanel tx={tx} />
+        <section className="panel" aria-label="Check an existing transaction" style={{marginBottom:16}}>
+          <label htmlFor="resume-hash">Check an existing transaction</label>
+          <div style={{display:"flex",gap:12,flexWrap:"wrap",marginTop:10}}>
+            <input id="resume-hash" aria-label="Transaction hash" placeholder="0x… transaction hash"
+              value={resumeHash} onChange={(event) => setResumeHash(event.target.value)}
+              disabled={busy} style={{flex:"1 1 260px",minWidth:0}} />
+            <button className="button ghost" disabled={busy || !live || !resumeHash.trim()}
+              onClick={() => void runAction(resumeTransaction)}>Check status</button>
+          </div>
+          <small>Reads the existing transaction without sending it again or requesting a wallet signature.</small>
+        </section>
 
         {notice && <div className="notice" role="status">{notice}</div>}
 
@@ -889,3 +923,4 @@ export default function Home() {
     </>
   );
 }
+

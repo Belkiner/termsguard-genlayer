@@ -175,7 +175,7 @@ function normalizeExecution(raw: unknown): string {
 function executionSucceeded(execution: string) {
   const value = execution.toUpperCase();
   return (
-    value.includes("FINISHED_WITH_RETURN") ||
+    value === "FINISHED_WITH_RETURN" ||
     value === "RETURN" ||
     value === "SUCCESS"
   );
@@ -188,6 +188,8 @@ export function executionFailed(execution: string) {
     value.includes("ERROR") ||
     value.includes("FAILED") ||
     value.includes("REVERT") ||
+    value === "ROLLBACK" ||
+    value === "FAILURE" ||
     value.includes("NONDET_DISAGREE") ||
     value.includes("NONDETDISAGREE") ||
     value.includes("TIMEOUT") ||
@@ -196,63 +198,53 @@ export function executionFailed(execution: string) {
   );
 }
 
-export async function getTransactionProgress(
-  client: any,
-  hash: string,
-): Promise<TxProgress> {
-  const tx = await client.getTransaction({ hash });
+// Studionet uses consensus_data.leader_receipt; testnets expose top-level
+// txExecutionResult. Consensus votes must never substitute for execution.
+function receiptResultStatus(result: any): string {
+  if (result && typeof result === "object") return normalizeName(result.status).toLowerCase();
+  if (typeof result !== "string" || !result) return "";
+  try {
+    const bytes = atob(result);
+    // GenVM result-byte enum differs from txExecutionResult: Return is 0 here.
+    return ["return", "rollback", "contract_error", "error", "none", "no_leaders"][bytes.charCodeAt(0)] ?? "";
+  } catch { return ""; }
+}
 
-  // GenLayer exposes two different result concepts:
-  // - result_name / txResultName: consensus result (e.g. MAJORITY_AGREE)
-  // - txExecutionResultName: GenVM execution result (e.g. FINISHED_WITH_RETURN)
-  // Never use the consensus result as a fallback for execution.
-  const resultName = normalizeName(
-    tx?.result_name ??
-      tx?.txResultName ??
-      tx?.resultName ??
-      "",
-  );
+export function transactionProgress(tx: any, hash: string): TxProgress {
+  const status = normalizeStatus(tx?.statusName ?? tx?.status_name ?? tx?.status ?? tx?.statusCode);
+  const resultName = normalizeName(tx?.result_name ?? tx?.txResultName ?? tx?.resultName);
+  const rawReceipts = tx?.consensus_data?.leader_receipt ?? tx?.consensusData?.leaderReceipt
+    ?? tx?.leader_receipt ?? tx?.leaderReceipt ?? tx?.receipt;
+  const receipts = (Array.isArray(rawReceipts) ? rawReceipts : [rawReceipts])
+    .filter((r: any) => r && typeof r === "object");
+  const top = [tx?.txExecutionResultName, tx?.tx_execution_result_name,
+    tx?.txExecutionResult, tx?.tx_execution_result, tx?.execution_result_name,
+    tx?.execution_result, tx?.executionResult].map(normalizeExecution);
+  const nested = receipts.flatMap((r: any) => [r.execution_result, r.executionResult].map(normalizeExecution));
+  const statuses = receipts.flatMap((r: any) => [receiptResultStatus(r.result), normalizeName(r.status).toLowerCase()]);
+  const badReceipt = statuses.find((v: string) => ["rollback", "contract_error", "error", "no_leaders"].includes(v));
+  const receiptError = receipts.some((r: any) => r.error != null && r.error !== "");
+  const candidates = [...top, ...nested];
+  const failure = candidates.find(executionFailed);
+  // Multiple leader receipts with mixed results are ambiguous; never pick an
+  // earlier successful leader and hide an error from another receipt.
+  const receiptStatus = badReceipt || (receiptError ? "contract_error" : statuses.includes("return") ? "return" : "");
+  const execution = failure || (badReceipt || receiptError ? "FINISHED_WITH_ERROR" :
+    candidates.find(executionSucceeded) || (receiptStatus === "return" ? "FINISHED_WITH_RETURN" :
+      candidates.find((v) => v !== "UNKNOWN") || "UNKNOWN"));
+  const decided = ["ACCEPTED", "READY_TO_FINALIZE", "FINALIZED"].includes(status);
+  const success = decided && executionSucceeded(execution) && !failure && !badReceipt && !receiptError
+    && !["MAJORITY_DISAGREE", "UNDETERMINED", "MAJORITY_TIMEOUT", "NO_MAJORITY", "DETERMINISTIC_VIOLATION"].includes(resultName);
+  return {hash, status, execution, resultName, receiptStatus, success};
+}
 
-  const receiptStatus = String(
-    tx?.leader_receipt?.status ??
-      tx?.leaderReceipt?.status ??
-      tx?.receipt?.status ??
-      "",
-  ).toLowerCase();
+export async function getTransactionProgress(client: any, hash: string): Promise<TxProgress> {
+  if (!/^0x[0-9a-fA-F]{64}$/.test(hash)) throw new Error("Enter a valid transaction hash (0x and 64 hexadecimal characters).");
+  return transactionProgress(await client.getTransaction({hash}), hash);
+}
 
-  const rawExecution =
-    tx?.txExecutionResultName ??
-    tx?.tx_execution_result_name ??
-    tx?.txExecutionResult ??
-    tx?.tx_execution_result ??
-    tx?.execution_result_name ??
-    tx?.execution_result ??
-    tx?.executionResult ??
-    "";
-
-  const execution = normalizeExecution(rawExecution);
-
-  const explicitExecutionSuccess = executionSucceeded(execution);
-  const explicitExecutionFailure = executionFailed(execution);
-
-  // Unknown/NOT_VOTED execution at ACCEPTED is still pending. The consensus
-  // result MAJORITY_AGREE only tells us that validators accepted the proposal;
-  // it does not mean the GenVM execution result is available yet.
-  const success =
-    explicitExecutionSuccess &&
-    !explicitExecutionFailure &&
-    receiptStatus !== "contract_error" &&
-    resultName !== "MAJORITY_DISAGREE" &&
-    resultName !== "UNDETERMINED";
-
-  return {
-    hash,
-    status: normalizeStatus(tx?.statusName ?? tx?.status_name ?? tx?.status ?? tx?.statusCode),
-    execution,
-    resultName,
-    receiptStatus,
-    success,
-  };
+export function transactionReader() {
+  return createClient({chain: getChain()});
 }
 
 export async function waitForAccepted(
@@ -378,3 +370,4 @@ declare global {
     };
   }
 }
+
