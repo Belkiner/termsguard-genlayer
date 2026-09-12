@@ -610,6 +610,7 @@ export default function Home() {
           </div>
 
           <div className="top-actions">
+            <a href="/roadmap" style={{color:"inherit",fontSize:14,textUnderlineOffset:4}}>Roadmap</a>
             <span className="network">
               {networkName()} {live ? "LIVE" : "SETUP NEEDED"}
             </span>
