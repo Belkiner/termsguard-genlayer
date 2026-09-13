@@ -19,7 +19,7 @@ export default function RoadmapPage() {
         <h1>Know what changes.<br />See what comes next.</h1>
         <p>We are building a clearer way to follow public policies and project promises, with evidence you can inspect.</p>
         <div className={styles.note}><strong>Planned improvements, with clear acceptance criteria.</strong> Some underlying capabilities already exist. Each milestone is complete only after its published implementation has been verified. Priorities may change; no delivery dates are committed.</div>
-        <p className={styles.updated}>Updated 12 September 2026 · Six planned milestones</p>
+        <p className={styles.updated}>Updated 13 September 2026 · Six planned milestones · X promises in review</p>
       </section>
       <ol className={styles.grid} aria-label="Planned milestones">
         <li className={styles.card}>
@@ -65,6 +65,12 @@ export default function RoadmapPage() {
           <div className={styles.acceptance}><strong>Ready when</strong><p>A commitment can be assessed using multiple linked sources, distinguishing a decision from its implementation.</p></div>
         </li>
       </ol>
+      <section className={styles.feedback}>
+        <h2>X promises · In review</h2>
+        <p>Import one public post, register a measurable promise in a separate contract, and assess it against a public evidence page. API configuration, contract deployment and live acceptance tests are still required.</p>
+        <p>Ready when capture, fulfillment verification, unavailable-source handling and transaction recovery pass on the configured network.</p>
+        <Link href="/social">Preview X promises →</Link>
+      </section>
       <section className={styles.feedback}>
         <h2>Help shape the next step.</h2>
         <p>Tell us which projects you follow and which changes you need to know about.</p>
