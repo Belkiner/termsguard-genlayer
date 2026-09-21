@@ -4,7 +4,7 @@
 
 TermsGuard helps people understand changes to public policies and track project commitments with evidence. This roadmap describes planned improvements, not functionality already delivered.
 
-Updated: 12 September 2026. All milestones below are **Planned**. Some underlying capabilities already exist; a milestone becomes Complete only after the published version meets its acceptance criterion. Order and scope may change. No delivery dates are committed.
+Updated: 13 September 2026. Milestones 1–6 are **Planned**; the X integration is **In review**. Some underlying capabilities already exist; a milestone becomes Complete only after the published version meets its acceptance criterion. Order and scope may change. No delivery dates are committed.
 
 ## 1. Reliable verification
 
@@ -78,3 +78,13 @@ Acceptance: A commitment can be assessed using multiple linked sources, distingu
 [Suggest an improvement or report a problem](https://github.com/Belkiner/termsguard-genlayer/issues). Link implementation issues and pull requests beneath the relevant milestone as they are created. Update this file and the website roadmap together whenever scope or status changes.
 
 Future idea: monitor TermsGuard's own published commitments using TermsGuard. This would demonstrate the product, not constitute an independent audit.
+
+
+
+## 7. X post promises
+
+**Status: In review**
+
+Import one public X post, register a measurable promise in a separate contract, and assess it against a public evidence page. Post text is retrieved when needed; the contract stores IDs and fingerprints. Changed or unavailable originals cannot be verified.
+
+Acceptance: capture, fulfillment verification, unavailable-source handling and transaction recovery pass on the configured network. API configuration, contract deployment and live acceptance tests are still required. See [SOCIAL.md](SOCIAL.md).
